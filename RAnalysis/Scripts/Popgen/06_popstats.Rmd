@@ -62,6 +62,11 @@ All.vcf <- vcfR::read.vcfR(here::here(getwd(),
 
   - subset the vct to target *all individuals from F1-F3 from low and moderate OA* as 'F1F2F3_LOW_MOD.vcf'
 
+  - **important** F0-12, F0-19, and F0-23 were sequenced but did not contribute to F1 offspring, omit
+  F0-12 is column 4
+  F0-19 is column 11
+  F0-23 is column 16
+  
 ```{r subset vcf file}
 
 # F1 thorugh F3 low and moderate only!
@@ -128,7 +133,7 @@ F1F2F3_LOW_MOD.DF    <- as.data.frame(F1F2F3_LOW_MOD.GenoM) %>% tibble::rownames
 nrow(F1F2F3_LOW_MOD.DF) # 289
 # merge the metadata by 'id' 
 F1F2F3_LOW_MOD.DF.meta <- cbind(F1F2F3_LOW_MOD.DF, F1F2F3_LOW_MOD.metadata, by = 'id')
-nrow(F1F2F3_LOW_MOD.GenoM.meta) # 289 - did not loose data, good to go! 
+nrow(F1F2F3_LOW_MOD.DF.meta) # 289 - did not loose data, good to go! 
 ```
 
 
@@ -155,7 +160,7 @@ strata_df <- data.frame(ID = ind,
 # create the gen ind object 
 # feed the colum population (as gen_treatment here) and the datafraframe strata_df as the strata metadata
 LowvMod_gen <- vcfR::vcfR2genind(F1F2F3_LOW_MOD.vcf, sep = "[|/]", pop = strata_df$Population, strata = strata_df)
-LowvMod_gen
+LowvMod_gen # 289 individuals; 2,947 loci; 5,894 alleles
 popNames(LowvMod_gen) # "F1_Low"      "F1_Moderate" "F2_Low"      "F2_Moderate" "F3_Low"      "F3_Moderate"
 ```
 
@@ -858,7 +863,10 @@ View details for ```OutFLANK``` copied/pasted below [here](https://rpubs.com/lot
 
 ```{r data for MakeDiploidFSTMat}
 
-# SNPmat for OutFLANK
+############################ #
+# SNPmat for OutFLANK ###### #
+############################ #
+
 ## load compressed vcf file
 ## then convert VCF format to SNP data format required by OutFLANK (Note that this is slow)
 All.vcf <- vcfR::read.vcfR(here::here(getwd(),
@@ -867,10 +875,12 @@ All.vcf <- vcfR::read.vcfR(here::here(getwd(),
                             "Popgen", 
                             "03_prune", 
                             "out.7.phased.vcf.gz"), verbose = FALSE)
+# subset for desired data - all offspring under low and moderate OA
 F1F2F3_LOW_MOD.vcf <- All.vcf[,c(1,27:139, 
                               153:177, 198:250, 
                               295:392)] 
- convertVCFtoCount3 <- function(string){
+# convert
+convertVCFtoCount3 <- function(string){
     # This function assumes 0 for reference
     # and 1 for alternate allele
     a <- as.numeric(unlist(strsplit(string, split = c("[|///]"))))
@@ -882,38 +892,126 @@ system.time(LowvMod.gen_table <- matrix(convertVCFtoCount3(LowvMod.vcf.gen), nco
 # user  system elapsed 
 # 0.57    0.00    1.38
 
-# locusNames
+# finally, we are here
+LowvMod.SNPdata <- t(LowvMod.gen_table) # transpose, gen_table has columns as indivs, rows as loci, switch
+
+############################ #
+# locusNames ############### #
+############################ #
+
 LowvMod_locinames <- paste(F1F2F3_LOW_MOD.vcf@fix[,"CHROM"], 
                            F1F2F3_LOW_MOD.vcf@fix[,"POS"], sep="_")
-length(LowvMod_locinames) == ncol(LowvMod_matrix)
+length(LowvMod_locinames) == nrow(LowvMod.gen_table)
 
+############################ #
 # popNames - genlight object was created in line 157 from F1F2F3_LOW_MOD.vcf 
+############################ #
+
 LowvMod_gen@strata # grab population from here, first make sure its the same order as the matrix above
-LowvMod_gen@strata$ID == rownames(LowvMod_matrix) # all MUST BE TRUE! good to go
+# LowvMod_gen@strata$ID == rownames(LowvMod_matrix) # all MUST BE TRUE! good to go
 table(LowvMod_gen@strata$Population) # call LowvMod_gen@strata$Population in ```MakeDiploidFSTMat```
+# F1_Low F1_Moderate      F2_Low F2_Moderate      F3_Low F3_Moderate 
+#     58          55          32          46          49          49
 ```
 
 ### Run ```MakeDiploidFSTMat```
 
+* calculate Fst on the data
+
 ```{r run MakeDiploidFSTMat}
 # INPUTS
-# SNPmat
-LowvMod.SNPdata <- t(LowvMod.gen_table) # transpose, gen_table has columns as indivs, rows as loci, switch
-# locusNames
-LowvMod.locinames
-# popNames
-LowvMod_gen@strata$Population
+# SNPmat     = LowvMod.SNPdata 
+# locusNames = LowvMod.locinames
+# popNames   = LowvMod_gen@strata$Population
 
 # RUN it output as 'LowvMod.OutFLANK.Fst'
 LowvMod.FSTMat <- OutFLANK::MakeDiploidFSTMat(LowvMod.SNPdata, 
-                            LowvMod_locinames, 
-                            LowvMod_gen@strata$Population)# MakeDiploidFSTMat(SNPmat,locusNames,popNames)
+                                              locusNames = LowvMod_locinames, 
+                                              popNames = LowvMod_gen@strata$Population)# MakeDiploidFSTMat(SNPmat,locusNames,popNames)
+head(LowvMod.FSTMat) # view first few rows
+```
 
-LowvMod.FSTMat
+## Data checks: Heterozygosity vs. FST
+
+Here, you can see how some of the low H loci have high FST. 
+These are all neutral loci in the simulation, and it is important to exclude them from the OutFLANK algorithm.
+```{r, Check He vs. Fst}
+plot(LowvMod.FSTMat$He, LowvMod.FSTMat$FST)
+```
+
+## Data checks: FST vs. FSTNoCorr
+
+* To fit the FST distribution to chi-square, OutFLANK requires the FST uncorrected for sample size (`FSTNoCorr`). This is a valid approach as long as all loci have equal sample sizes within populations. The effect of correcting for sample size will make the corrected FST estimate (`FST`) lower than the uncorrected FST estimate (`FSTNoCorr`). Note that all loci deviate between `FST` and `FSTNoCorr` but OutFLANK assumes that these deviations are the same for each locus. If a locus has a much lower sample size compared to the rest, it could have a broader error distribution (and therefore incorrectly inferred as an outlier). 
+
+* Look for loci that deviate from the linear relationship in this plot, and remove those loci.
+
+* no loci deviate from the linear relationship (view below)
+
+```{r, Check Dst v FSTNoCorr}
+plot(LowvMod.FSTMat$FST, LowvMod.FSTMat$FSTNoCorr)
+abline(0,1)
+```
+
+## Data prep: decide which SNPs to use for calibrating the null distribution of Fst
+
+* Another good practice is to use a set of SNPs from the genome that are random and quasi-independent to calculate mean FST (`FSTbar`) and the degrees of freedom on the chi-square distribution (`df`).
+
+* Before running the OutFLANK() function to estimate the parameters on the neutral FST distribution, you will want to identify a quasi-independent set of SNPs to calculate `FSTbar` and `df`. A common way of obtaining these SNPs is to thin for linkage disequilibrium (SNP thinning), which typically moves along a genome in a sliding window and thins SNPs based on linkage disequilibrium with each other.
+
+* I conducted LD pruning with plink, the vcf file is already pruned!
+
+## OutFLANK analysis with quasi-independent set of SNPs
+
+Next, you can run the `OutFLANK()` function to estimate the parameters on the neutral FST distribution.
+```{r}
+#### Evaluating OutFLANK with trimmed SNPs ####
+View(LowvMod.FSTMat)
+out_trim <- OutFLANK(
+  # (LowvMod.FSTMat %>% filter(!FST > 0.11)), # there are 2 resulting outliers, very high Fst, omit
+  LowvMod.FSTMat,
+    NumberOfSamples=6, # F1M, F1L, F2M, F2L, F3M, F3L = 6
+    # qthreshold = 0.03, 
+    LeftTrimFraction = 0.05, # lower Fst
+    RightTrimFraction = 0.05, # upper Fst
+    qthreshold = 0.05, # no outliers detected for high FSt
+    Hmin = 0.3 # 0.1
+  )
+str(out_trim)
+head(out_trim$results)
+```
+
+Check the fit and make sure it looks good, especially in the right tail:
+```{r, fig.width=6}
+OutFLANKResultsPlotter(out_trim, withOutliers = TRUE,
+                       NoCorr = TRUE, Hmin = 0.1, binwidth = 0.001, Zoom =
+                         FALSE, RightZoomFraction = 0.05, titletext = NULL)
+
+## Zoom in on right tail
+OutFLANKResultsPlotter(out_trim , withOutliers = TRUE,
+                       NoCorr = TRUE, Hmin = 0.1, binwidth = 0.001, Zoom =
+                         TRUE, RightZoomFraction = 0.15, titletext = NULL)
+```
+
+### Also check the P-value histogram:
+
+Here, we plot the "right-tailed" P-values, which means that outliers in the right tail of the FST distribution will have a P-value near zero. Because we ran the algorithm on a trimmed set of SNPs, this will remove some of the signal around selected sites. So we expect this histogram to be flat and maybe have a bump near 0 for selected sites. This histogram looks pretty good.
+```{r, fig.width=6}
+hist(out_trim$results$pvaluesRightTail)
 ```
 
 
+
+
+
 ```{r}
+
+
+LowvMod.FSTMat_OM <- (LowvMod.FSTMat %>% filter(!FST > 0.11))
+
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# not omitted of the two high outliers :::::::::::::::::::::::::::::
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
 plot(LowvMod.FSTMat$FST, LowvMod.FSTMat$FSTNoCorr, 
      xlim=c(-0.01,0.3), ylim=c(-0.01,0.3),
@@ -921,39 +1019,50 @@ plot(LowvMod.FSTMat$FST, LowvMod.FSTMat$FSTNoCorr,
 abline(0,1)
 
 
-
 plot(LowvMod.FSTMat$He, LowvMod.FSTMat$FSTNoCorr, pch=20, col="grey")
 
+hist(LowvMod.FSTMat$FSTNoCorr, breaks=seq(0,0.3, by=0.001)) # Note the large FST values for loci with low heterozygosity (He < 0.1)
 
-# Note the large FST values for loci with low heterozygosity (He < 0.1)
-hist(LowvMod.FSTMat$FSTNoCorr, breaks=seq(0,0.3, by=0.001))
-# Note how, when all loci are included, this doesn't look chi-square distributed 
-hist(LowvMod.FSTMat$FSTNoCorr[LowvMod.FSTMat$He>0.05], breaks=seq(0,0.3, by=0.001))
-# Removing low Heterozygosity variants results in a more chi-square looking FST distribution
-hist(LowvMod.FSTMat$FSTNoCorr[LowvMod.FSTMat$He>0.1], breaks=seq(0,0.3, by=0.001))                                      
+hist(LowvMod.FSTMat$FSTNoCorr[LowvMod.FSTMat$He>0.05], breaks=seq(0,0.3, by=0.001))# Note how, when all loci are included, this doesn't look chi-square distributed 
+
+hist(LowvMod.FSTMat$FSTNoCorr[LowvMod.FSTMat$He>0.1], breaks=seq(0,0.3, by=0.001)) # Removing low Heterozygosity variants results in a more chi-square looking FST distribution                                  
 # Run outflank
 # NumberOfSamples is the number of populations sampled. This is the only other argument without a default, aside from the data frame.
 out1 <- OutFLANK(LowvMod.FSTMat, NumberOfSamples=6) # populayion groups
 
 # Visualize results
- OutFLANKResultsPlotter(out1, withOutliers = TRUE,
-NoCorr = TRUE, Hmin = 0.1, binwidth = 0.001, Zoom =
-FALSE, RightZoomFraction = 0.05, titletext = NULL)
+OutFLANKResultsPlotter(out1, 
+                       withOutliers = TRUE,
+                       NoCorr = TRUE, 
+                       Hmin = 0.1, 
+                       binwidth = 0.001, 
+                       Zoom = FALSE, 
+                       RightZoomFraction = 0.05, 
+                       titletext = NULL)
  
  
 outlier = OutFLANK(LowvMod.FSTMat,NumberOfSamples = 6, 
-                     RightTrimFraction = 0.01, LeftTrimFraction = 0.05,
-                     # RightTrimFraction = 0.06, LeftTrimFraction = 0.35,
-                     qthreshold = 0.05, Hmin = 0.1)
+                     RightTrimFraction = 0.35, 
+                     LeftTrimFraction = 0.05,
+                     # RightTrimFraction = 0.06, 
+                     # LeftTrimFraction = 0.35,
+                     qthreshold = 0.05, 
+                     Hmin = 0.1)
+
 # increasing the Right Trim Fraction doesn't help, but increasing the left trim fraction enables a better fit
-  
-OutFLANKResultsPlotter(outlier, withOutliers = TRUE,
-NoCorr = TRUE, Hmin = 0.1, binwidth = 0.001, Zoom =
-FALSE, RightZoomFraction = 0.05, titletext = NULL)
+OutFLANKResultsPlotter(outlier, 
+                       withOutliers = TRUE,
+                       NoCorr = TRUE, 
+                       Hmin = 0.1, 
+                       binwidth = 0.001, 
+                       Zoom = FALSE, 
+                       RightZoomFraction = 0.05, 
+                       titletext = NULL)
 
 # hist(outlier$results$pvaluesRightTail)
 # str(outlier)
-sum(outlier$results$qvalues<0.01, na.rm=TRUE)
+sum(outlier$results$qvalues<0.05, na.rm=TRUE) # found 2 outliers
 plot(outlier$results$He, outlier$results$FST, pch=20, col="grey")
-    points(outlier$results$He[outlier$results$qvalues<0.01], outlier$results$FST[outlier$results$qvalues<0.01], pch=21, col="blue")
+points(outlier$results$He[outlier$results$qvalues<0.01], outlier$results$FST[outlier$results$qvalues<0.01], pch=21, col="blue")
+    
 ```

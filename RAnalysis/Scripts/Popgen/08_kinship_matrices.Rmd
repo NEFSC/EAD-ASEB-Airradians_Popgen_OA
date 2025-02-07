@@ -9,7 +9,8 @@ author: "Samuel Gurr"
 
 
 * kinship matrix
-  * use the outputs from ```sequoia``` to build kinship matrices necessary to run heritability and selection
+  * use the outputs from ```sequoia``` (custom functions SequoiaBootPed and GetMaybeRelBootPed, review 07_pedigree.Rmd script) 
+  to build kinship matrices necessary to run heritability and selection
   * **Important!**: kinship2 is a common R package to execuate this task, however is modelled on sexually dimporphic pedigree, meaning sires and dams are always unique individuals (written for humans). Our data on the bay scallop has some cases at which eggs and sperm were used from the same individual and alowed to batch fertilize separate to avoid selfing - in summary, we have ids that may have been identified as *both* dam and sire for different individuals and infact may be true (based on real batch fertilizations). Therefore we need to explore alternative tools other than kinship2
   * R packages to run kinship matrix: 
     - kinship2: as explained above, we will get errors, important to run anyway! Jesca wrote the function sequoia::CalcRPed that acts as a wrapper of kinship2::kinship, lets run this
@@ -33,52 +34,103 @@ library(ribd) #install.packages('ribd')
 library(sequoia)
 ```
 
-### load pedigree output from  ```sequoia``` 
+### load pedigree output from custom functions SequoiaBootPed and GetMaybeRelBootPed in 07_pedigree.Rmd
 
 * load the pedigree
 
+  - SequoiaBootPed is the pedigree using 100 permutations of ```sequoia::sequoia```
+  - GetMaybeRelBootPed is the pedigree via ```sequoia::GetMaybeRel`` for ids not constructed by SequoiaBootPed, ran permutations until identified
+
 ```{r load output pedigrees}
 
-# pedigree :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# FO Broodstock pedigree - note there is no pedigree!! required for kinship matrix howevere
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
-# F1 Offspring (includes low and moderate with F0 dams and sires, no F0 pedigree known)
-F1O.pedigree <- read.csv("RAnalysis/Output/Popgen/pedigree/F0BF1O/F0BF1O_final.csv") %>% 
-                      select(id, dam, sire) 
+F1.Parentage <- read.csv(paste0(getwd(), "/RAnalysis/Data/Popgen/Parentages/F1_parentage.csv"),sep = ',', head = T) 
 
-# F2 offspring (includes the juveniles and broodstock F2s, no F1 broodstock pedigree included)
-F1BF2O.pedigree.low  <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/Low/F1BF2O_Low_final.csv") %>% 
-                                select(id, dam, sire) 
-F1BF2O.pedigree.mod  <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/Moderate/F1BF2O_Mod_final.csv") %>% 
-                                select(id, dam, sire) 
-F1BF2O.pedigree.high <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/High/F1BF2O_High_final.csv") %>% 
-                                select(id, dam, sire) 
+F0B.pedigree <- F1.Parentage %>% 
+                        dplyr::select(vcf_ID_raw,Ped) %>% 
+                        dplyr::rename(id = vcf_ID_raw) %>% 
+                        dplyr::mutate(sire = NA, # all NAs unknown
+                                      dam = NA) %>% # all NAs unknown
+                                      # sex = case_when(Ped %in% 'Both' ~ 3,
+                                      #                 Ped %in% 'Dam' ~ 1,
+                                      #                 Ped %in% 'Sire' ~ 2)) %>% 
+                        dplyr::select(!Ped) %>% 
+                        dplyr::filter(!id %in% c( # exclude these broodstock, sequenced but did not contribute to offspring fertilizations
+                                                'adapter_trim.F0-B12.bam',
+                                                'adapter_trim.F0-B19.bam',
+                                                'adapter_trim.F0-B23.bam',
+                                                'adapter_trim.F0-B24.bam'
+                                                ))
 
-# have not run these yet!
-# F2BF3O.pedigree.low  <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/Low/F2BF3O_Low_final.csv") %>% 
-#                                 select(id, dam, sire) 
-# F2BF3O.pedigree.mod  <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/Moderate/F2BF3O_Mod_final.csv") %>% 
-#                                 select(id, dam, sire) 
-# F2BF3O.pedigree.high <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/High/F2BF3O_High_final.csv") %>% 
-#                                 select(id, dam, sire) 
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# F1 Offspring
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
-# F2 offspring (includes the juveniles and broodstock F2s, no F1 broodstock pedigree included)
+# F1 Offspring (includes all F1 offspring as the low nad mod have common F0 parents, no F0 pedigree known)
+F1O.SequoiaBootPed  <- read.csv("RAnalysis/Output/Popgen/pedigree/F0BF1O/F0BF1O_SequoiaBootPed_out.csv") %>% select(id, dam, sire) 
+F1O.pedigree        <- rbind(F1O.SequoiaBootPed, F0B.pedigree)
+
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# F2 offspring (includes the offspring and broodstock F2s, no F1 broodstock pedigree included)
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# low
+F1BF2O.SequoiaBootPed.low      <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/Low/F1BF2O_Low_SequoiaBootPed_out.csv") %>%  select(id, dam, sire) 
+F1BF2O.GetMaybeRelBootPed.low  <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/Low/F1BF2O_Low_GetMaybeRelBootPed_out.csv") %>%  select(id, dam, sire) 
+F1BF2O.pedigree.low            <- rbind(F1BF2O.SequoiaBootPed.low, F1BF2O.GetMaybeRelBootPed.low)
 
 
-# F1, F2, and F3 low v high pedigree, note no F0 pedigree known or included in here
-LowvMod.pedigree <- read.csv("RAnalysis/Output/Popgen/pedigree/All_Low_v_Moderate_final.csv") %>% 
-                                select(id, dam, sire) 
+# moderate
+F1BF2O.SequoiaBootPed.mod      <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/Moderate/F1BF2O_Mod_SequoiaBootPed_out.csv") %>%  select(id, dam, sire) 
+F1BF2O.GetMaybeRelBootPed.mod  <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/Moderate/F1BF2O_Mod_GetMaybeRelBootPed_out.csv") %>%  select(id, dam, sire) 
+F1BF2O.pedigree.mod            <- rbind(F1BF2O.SequoiaBootPed.mod, F1BF2O.GetMaybeRelBootPed.mod)
+
+
+
+# high
+F1BF2O.SequoiaBootPed.high      <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/High/F1BF2O_High_SequoiaBootPed_out.csv") %>%  select(id, dam, sire) 
+F1BF2O.GetMaybeRelBootPed.high  <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/High/F1BF2O_High_GetMaybeRelBootPed_out.csv") %>%  select(id, dam, sire) 
+F1BF2O.pedigree.high            <- rbind(F1BF2O.SequoiaBootPed.high, F1BF2O.GetMaybeRelBootPed.high)
+
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# F3 offspring (includes the offspring only)
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# low
+F2BF3O.SequoiaBootPed.low      <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/Low/F2BF3O_Low_SequoiaBootPed_out.csv") %>%  select(id, dam, sire) 
+F2BF3O.GetMaybeRelBootPed.low  <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/Low/F2BF3O_Low_GetMaybeRelBootPed_out.csv") %>%  select(id, dam, sire) 
+F2BF3O.pedigree.low            <- rbind(F2BF3O.SequoiaBootPed.low, F2BF3O.GetMaybeRelBootPed.low)
+
+# moderate
+F2BF3O.SequoiaBootPed.mod      <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/Moderate/F2BF3O_Mod_SequoiaBootPed_out.csv") %>%  select(id, dam, sire) 
+F2BF3O.GetMaybeRelBootPed.mod  <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/Moderate/F2BF3O_Mod_GetMaybeRelBootPed_out.csv") %>%  select(id, dam, sire) 
+F2BF3O.pedigree.mod            <- rbind(F2BF3O.SequoiaBootPed.mod, F2BF3O.GetMaybeRelBootPed.mod)
+
+
+# high
+F2BF3O.SequoiaBootPed.high      <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/High/F2BF3O_High_SequoiaBootPed_out.csv") %>%  select(id, dam, sire) 
+F2BF3O.GetMaybeRelBootPed.high  <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/High/F2BF3O_High_GetMaybeRelBootPed_out.csv") %>%  select(id, dam, sire) 
+F2BF3O.pedigree.high            <- rbind(F2BF3O.SequoiaBootPed.high, F2BF3O.GetMaybeRelBootPed.high)
 
 ```
 
 ### load life history data and subset as appropriate for pedigrees
 
 
-* load the vcf file to otbain a list of all IDs
-* assign birthyear and yearlast based on generation F0, F1, F2, and F3 in the id names
-* load the parentage data of the F1 F2 and F3 offspring, these contain the broodstock "assignments" 
-  * **note** assignments as female if only egg and male if only sperm was used fir batch fertilizations, otherwise given unknown for hermaphroditic contributions to batch fertilization, this may be inappropriate for these data and solely assign all animals as unknown for consistency - repeat this to test whether results change 
-* subset All.LifeHistData.2 based on ids in the pedigree
+## Subset the vcf file
 
+* objective: to call different vcf file subsets to run pedigree and parentage analysis
+
+  - first lets see the calls to subset based on generation and life stage, below our master calls
+  
+  - **important** F0-12, F0-19, and F0-23 were sequenced but did not contribute to F1 offspring, omit
+  F0-12 is column 4
+  F0-19 is column 11
+  F0-23 is column 16
+  
 ```{r list all IDs in the master vcf}
 
 # call th vcf file with all ids for the project 
@@ -88,9 +140,26 @@ All.vcf <- vcfR::read.vcfR(here::here(getwd(),
                             "Popgen", 
                             "03_prune", 
                             "out.7.phased.vcf.gz"), verbose = FALSE)
-All.ListIDs           <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+
+All.ListIDs     <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+
+All_LOW_MOD.vcf <- All.vcf[,c(1:3, 5:10, 12:15, 17:139, # F0 and all F1 offspring
+                              153:163, 198:218, # F2 offspring from low OA
+                              164:177, 219:250, # F2 offspring from moderate OA
+                              295:343, # F3 offspring from low OA
+                              344:392)] # F3 offspring from moderate OA
+
+All_LOW_MOD.ListIDs     <- colnames(All_LOW_MOD.vcf@gt[,2:length(colnames(All_LOW_MOD.vcf@gt))])
 
 ```
+
+* load the vcf file to otbain a list of all IDs
+* assign birthyear and yearlast based on generation F0, F1, F2, and F3 in the id names
+* load the parentage data of the F1 F2 and F3 offspring, these contain the broodstock "assignments" 
+  * **note** assignments as female if only egg and male if only sperm was used fir batch fertilizations, otherwise given unknown for hermaphroditic contributions to batch fertilization, this may be inappropriate for these data and solely assign all animals as unknown for consistency - repeat this to test whether results change 
+* subset All.LifeHistData.2 based on ids in the pedigree
+
+
 
 
 ```{r lifehistory and sex}
@@ -215,68 +284,60 @@ All.LifeHistData.2   <-  merge(
 ```
 
 
-### load parentage data
-
-* F1.Parentage - contains the parentage of the F1 offpsirng, meaning the female (egg) and male (sperm) ids and their batch fertilization ids of the  **F0 Broodstock**
-  * *no pCO2 treamtents, 'founder' population of the experiment, F1 progeny (as embryos) were dispersed in low and moderate pCO2 treatments*
-
-* F2.Parentage - contains the parentage of the F1 offpsirng, meaning the female (egg) and male (sperm) ids and their batch fertilization ids of the  **F1 Broodstock**
-  * *low and moderate pCO2 treatments, contained matched progeny exposure*
-  
-* F3.Parentage - contains the parentage of the F1 offpsirng, meaning the female (egg) and male (sperm) ids and their batch fertilization ids of the  **F2 Broodstock**
-  * *low,  moderate, and high (!) pCO2 treatments, contained matched progeny exposure*
-
-
-* '_ped' = prepared the parentage data to rbind to the pedigree of their offpsring, formatted for kingship2::kinship()
-  - format for kinship() must have four columns id, dadid, momid, sex
-  - assign dam and sire (momid and dadid) as NA for the F0 broodstock
-  - sex: bay scallops are simultaneous hermaphrodites, however kingship() faces errors when parents 
-  have conflicting results with the dadid and momid assignment to progeny
-```{r load broodstock pedigree for F0 data}
-F1.Parentage <- read.csv(
-                        paste0(
-                        getwd(),
-                        "/RAnalysis/Data/Popgen/Parentages/F1_parentage.csv"), 
-                        sep = ',', 
-                        head = T) 
-
-F0B.pedigree <- F1.Parentage %>% 
-                        dplyr::select(vcf_ID_raw,Ped) %>% 
-                        dplyr::rename(id = vcf_ID_raw) %>% 
-                        dplyr::mutate(sire = NA,
-                                      dam = NA) %>% 
-                                      # sex = case_when(Ped %in% 'Both' ~ 3,
-                                      #                 Ped %in% 'Dam' ~ 1,
-                                      #                 Ped %in% 'Sire' ~ 2)) %>% 
-                        dplyr::select(!Ped)
-```
-
 ### pedigree and kinship matrix: attempt sequoia::CalcRPed wrapper of kinship2
 
 * **Note** as described at the top of the script, this will throw an error if there is an pedigree as dam and sire for different individuals (does not like hermaphrodites!)
 
 ```{r kinship2 will not work}
-CalcRped(F0BF1O.pedigree, OUT = "DF") # Error message: Id not male, but is a father
-CalcRped(F1BF2O.pedigree.low, OUT = "DF") # Error message: Id not male, but is a father adapter_trim.F1-B8-pH8.bam
+
+# F1 
+CalcRped(F1O.pedigree, OUT = "DF") # Error message: Id not male, but is a father
+
+# F2
+CalcRped(F1BF2O.pedigree.low, OUT = "DF") # ran successfully because there was not a case of hermaphrodite pedigree
 CalcRped(F1BF2O.pedigree.mod, OUT = "DF") # ran successfully because there was not a case of hermaphrodite pedigree
-CalcRped(F1BF2O.pedigree.high, OUT = "DF") # Id not male, but is a father: adapter_trim.F1-B8-pH8.bam
+CalcRped(F1BF2O.pedigree.high, OUT = "DF") # Id not male, but is a father
+
+# F3
+CalcRped(F2BF3O.pedigree.low, OUT = "DF") # Id not male, but is a father
+CalcRped(F2BF3O.pedigree.mod, OUT = "DF") # Id not male, but is a father
+CalcRped(F2BF3O.pedigree.high, OUT = "DF") # Id not male, but is a father
 ```
 
-### pedigree and kinship matrix: use pedtools and ribd 
+## Kinship matrix: use pedtools and ribd 
 
 ```{r about ribd}
 ?ribd
 # Founders are allowed to be inbred, which enables construction of any given kappa coefficients, as described in Vigeland (2020). In addition to the standard coefficients, 'ribd' also computes a range of lesser-known coefficients, including generalised kinship coefficients, multi-person coefficients and two-locus coefficients
 ```
 
-* reformat the pedigree
-```{r F0 broodstock and F1 offspring pedtools::ped}
-# bind the F0 pedigree (all unknown) with the known F1 offpsring pedigree (from sequoia)
+
+### All data 
+
+Merge each pedigree file, create kinship matrix 
+
+```{r Kinship matrix: All data}
+
+All.pedigree <- rbind( # F1 offspring w/blank F0
+                          F1O.pedigree,
+                          # F1 offspring 
+                          F1BF2O.pedigree.low,
+                          F1BF2O.pedigree.mod,
+                          F1BF2O.pedigree.high,
+                          # F2 offspring
+                          F2BF3O.pedigree.low,
+                          F2BF3O.pedigree.mod,
+                          F2BF3O.pedigree.high
+                          )
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Pedigree using pedtools::ped
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 # and merge with the lifehistory data to obtain sex
 # sex == 4 was assigned for all offspring, whereas 1 or 2 was assigned for parents that solely contributed sperm and egg
 # pedtools::ped only recognizes sex 0,1, and 2 where 0 is unknown
-F0BF1O.pedigree <- merge(
-                          rbind(F1O.pedigree, F0B.pedigree), # bind F1 offspring and F0 broodstokc pedigree
+All.pedigree.sex <- merge(
+                          All.pedigree, # bind F1 offspring and F0 broodstokc pedigree
                           (All.LifeHistData.2 %>% select(id, sex)), # merge with lifehistory to get sex
                         by = 'id'
                         ) %>% 
@@ -287,83 +348,83 @@ F0BF1O.pedigree <- merge(
                                               .default = sex))
 
 # ped
-F0BF1O.pedform <- pedtools::ped(id = F0BF1O.pedigree$id,
-                                        fid = F0BF1O.pedigree$dam,
-                                        mid = F0BF1O.pedigree$sire,
-                                        sex = F0BF1O.pedigree$sex)
-nrow(as.data.frame(F0BF1O.pedform$`_comp1`))
+All.pedform <- pedtools::ped(id = All.pedigree.sex$id,
+                                        fid = All.pedigree.sex$dam,
+                                        mid = All.pedigree.sex$sire,
+                                        sex = All.pedigree.sex$sex)
 
-# wrtie ped data and kinship
-write.csv(as.matrix(F0BF1O.pedform$`_comp1`),
-          paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/F0BF1O/F0BF1O_ped.csv"),
-          row.names=FALSE)
-```
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Kinship matrix using ribd::kinship
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
-```{r F1 broodstock and F2 offspring from LOW OA pedtools::ped}
-# bind the F0 pedigree (all unknown) with the known F1 offpsring pedigree (from sequoia)
-# and merge with the lifehistory data to obtain sex
-# sex == 4 was assigned for all offspring, whereas 1 or 2 was assigned for parents that solely contributed sperm and egg
-# pedtools::ped only recognizes sex 0,1, and 2 where 0 is unknown
-F1BF2O.pedigree.sex <- merge(
-                          F1BF2O.pedigree.low, # bind F1 offspring and F0 broodstokc pedigree
-                          (All.LifeHistData.2 %>% select(id, sex)), # merge with lifehistory to get sex
-                        by = 'id'
-                        ) %>% 
-                    #dplyr::mutate(sex == 0) # try this as well, just assign all as unknown since they are hermaphrodites
-                    dplyr::mutate(sex =  # format sex so that all occurances of '4' are ow 0 for pedtools
-                                    case_when(sex == 4 ~ 0,
-                                              .default = sex))
-
-# ped
-F1BF2O_low.pedform <- pedtools::ped(id = F1BF2O.pedigree.sex$id,
-                                        fid = F1BF2O.pedigree.sex$dam,
-                                        mid = F1BF2O.pedigree.sex$sire,
-                                        sex = F1BF2O.pedigree.sex$sex)
-
-# wrtie ped data and kinship
-write.csv(F0BF1O.pedform,
-          paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/F0BF1O/F0BF1O_ped.csv"),
-          row.names=FALSE)
-```
-
-
-```{r all offspring from low and moderate OA pedtools::ped}
-# bind the F0 pedigree (all unknown) with the known F1 offpsring pedigree (from sequoia)
-# and merge with the lifehistory data to obtain sex
-# sex == 4 was assigned for all offspring, whereas 1 or 2 was assigned for parents that solely contributed sperm and egg
-# pedtools::ped only recognizes sex 0,1, and 2 where 0 is unknown
-
-# LowvMod.pedigree <- LowvMod.pedigree[-13,] # we have a duplicate F1-B25 id, need to address this in the pedigree script
-LowvModerate.pedigree.sex <- merge(
-                          rbind(LowvMod.pedigree, F0B.pedigree), # bind F1 offspring and F0 broodstokc pedigree
-                          (All.LifeHistData.2 %>% select(id, sex)), # merge with lifehistory to get sex
-                        by = 'id'
-                        ) %>% 
-                    #dplyr::mutate(sex == 0) # try this as well, just assign all as unknown since they are hermaphrodites
-                    dplyr::mutate(sex =  # format sex so that all occurances of '4' are ow 0 for pedtools
-                                    case_when(sex == 4 ~ 0,
-                                              .default = sex))
-
-View(LowvMod.pedigree)
-# ped
-LowvModerate.pedform <- pedtools::ped(id = LowvModerate.pedigree.sex$id,
-                                        fid = LowvModerate.pedigree.sex$dam,
-                                        mid = LowvModerate.pedigree.sex$sire,
-                                        sex = LowvModerate.pedigree.sex$sex)
-
-# wrtie ped data and kinship
-write.csv(F0BF1O.pedform,
-          paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/F0BF1O/F0BF1O_ped.csv"),
-          row.names=FALSE)
-```
-
-* assemble a kinship matrix
-
-```{r F0 broodstock F1 offspring pedtools::kinship}
-F0BF1O.kinship <- kinship(F0BF1O.pedform)
+All.kinship <- ribd::kinship(All.pedform)
 
 # wrtie the kinship matrix
-write.csv(as.matrix(F0BF1O.kinship),
-          paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/F0BF1O/F0BF1O_kinship.csv"),
+write.csv(as.matrix(All.kinship),
+          paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/Kinship_matrix_master.csv"),
           row.names=TRUE)
 ```
+
+
+### Low v. Moderate
+
+Merge the following pedigrees to a master file: 
+
+  - F1O.pedigree = F1 low and moderate offspring and subseqent broodstock (same F0 parents!)
+  
+  - F1BF2O.pedigree.low = F2 low (contains F1 broodstock as dam and sires, need their pedigrees in F1O.pedigree)
+  
+  - F1BF2O.pedigree.mod = F2 moderate (contains F1 broodstock as dam and sires, need their pedigrees in F1O.pedigree)
+  
+  - F2BF3O.pedigree.low = F3 low (contains F2 broodstock as dam and sires, need their pedigrees in F1BF2O.pedigree.low)
+  
+  - F2BF3O.pedigree.mod = F3 moderate (contains F2 broodstock as dam and sires, need their pedigrees in F1BF2O.pedigree.mod)
+
+```{r Kinship matrix: Low v. Moderate}
+
+LowvMod.pedigree <- rbind( # F1 offspring w/blank F0
+                          F1O.pedigree,
+                          # F1 offspring 
+                          F1BF2O.pedigree.low,
+                          F1BF2O.pedigree.mod,
+                          # F2 offspring
+                          F2BF3O.pedigree.low,
+                          F2BF3O.pedigree.mod
+                          )
+
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Pedigree using pedtools::ped
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# and merge with the lifehistory data to obtain sex
+# sex == 4 was assigned for all offspring, whereas 1 or 2 was assigned for parents that solely contributed sperm and egg
+# pedtools::ped only recognizes sex 0,1, and 2 where 0 is unknown
+LowvMod.pedigree.sex <- merge(
+                          LowvMod.pedigree, # bind F1 offspring and F0 broodstokc pedigree
+                          (All.LifeHistData.2 %>% select(id, sex)), # merge with lifehistory to get sex
+                        by = 'id'
+                        ) %>% 
+                    #dplyr::mutate(sex == 0) # try this as well, just assign all as unknown since they are hermaphrodites
+                    dplyr::mutate(sex =  # format sex so that all occurances of '4' are ow 0 for pedtools
+                                    case_when(sex == 4 ~ 0,
+                                              sex %in% NA ~ 0,
+                                              .default = sex))
+
+# ped
+LowvMod.pedform <- pedtools::ped(id = LowvMod.pedigree.sex$id,
+                                        fid = LowvMod.pedigree.sex$dam,
+                                        mid = LowvMod.pedigree.sex$sire,
+                                        sex = LowvMod.pedigree.sex$sex)
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Kinship matrix using ribd::kinship
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+LowvMod.kinship <- ribd::kinship(LowvMod.pedform)
+
+# wrtie the kinship matrix
+write.csv(as.matrix(LowvMod.kinship),
+          paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/Kinship_matrix_low_v_moderate.csv"),
+          row.names=TRUE)
+```
+
