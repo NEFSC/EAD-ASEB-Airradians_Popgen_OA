@@ -249,7 +249,7 @@ colnames(lme4qtl.loop) <- c('stat',
                          'locus', 
                          'effect',
                          'df',
-                         'chisquared',
+                         'Fvalue',
                          'pvalue') # names for comuns in the for loop
 
 # what column in 'LowvMod_master_reordered_rm' do SNPs begin metadata listed beforehand)?
@@ -260,36 +260,47 @@ for (i in 6:ncol(LowvMod_master_reordered_rm)) {
   
   LowvMod_master_reordered_rm[,6]
   
-  
+
   if (length(unique(LowvMod_master_reordered_rm[,i])) == 2) {
           # run qtl
-          lme4qtl.run <- lme4qtl::relmatGlmer(LowvMod_master_reordered_rm[,i] ~ # SNP DV (must be 0 or 1)
-                                          gen * treatment +# treatment ID
+          lme4qtl.run <- lme4qtl::relmatGlmer(LowvMod_master_reordered_rm[,i] ~
+                                          #LowvMod_master_reordered_rm[,i] ~ # SNP DV (must be 0 or 1)
+                                          gen * treatment +# treatment ID, both between subjsect, no slope needed
                                           (1|id), # random factor id
                                           LowvMod_master_reordered_rm, # data
                                           relmat=list(id = LowvMod_cov_rm_rc), # covariance matrix (id relatedness)
                                           family = binomial(link = "probit") # for binary SNP allele dat 
                                   )
           # get anova stats for the model
-          mod.loop <- car::Anova(lme4qtl.run) # Kenward-Roger-corrected
+          #mod.loop <- car::Anova(lme4qtl.run) # Kenward-Roger-corrected
+          mod.loop <- anova(lme4qtl.run)
           # write out to 
           lme4qtl.loop$stat[c(1:3)]       <- "lme4QTL, binomial probit"
           lme4qtl.loop$locus[c(1:3)]      <- colnames(LowvMod_master_reordered_rm[i])
           # gen
           lme4qtl.loop$effect[1]          <- "generation"
-          lme4qtl.loop$df[1]              <- mod.loop$Df[1]
-          lme4qtl.loop$chisquared[1]      <- mod.loop$Chisq[1] # gen 
-          lme4qtl.loop$pvalue[1]          <- mod.loop$`Pr(>Chisq)`[1] # gen 
+          lme4qtl.loop$df[1]              <- mod.loop$npar[1]
+          lme4qtl.loop$Fvalue[1]          <- mod.loop$`F value`[1] # gen 
+          lme4qtl.loop$pvalue[1]          <- stats::pf(mod.loop$`F value`[1], 
+                                                        mod.loop$npar[1], 
+                                                        271, 
+                                                        lower.tail = FALSE)          
           # treatment
           lme4qtl.loop$effect[2]          <- "treatment"
-          lme4qtl.loop$df[2]              <- mod.loop$Df[2]
-          lme4qtl.loop$chisquared[2]      <- mod.loop$Chisq[2] # gen 
-          lme4qtl.loop$pvalue[2]          <- mod.loop$`Pr(>Chisq)`[2] # gen 
+          lme4qtl.loop$df[2]              <- mod.loop$npar[2]
+          lme4qtl.loop$Fvalue[2]          <- mod.loop$`F value`[2] # gen 
+          lme4qtl.loop$pvalue[2]          <- stats::pf(mod.loop$`F value`[2], 
+                                                        mod.loop$npar[2], 
+                                                        271, 
+                                                        lower.tail = FALSE)          
           # gen * treatment
           lme4qtl.loop$effect[3]          <- "generation * treatment"
-          lme4qtl.loop$df[3]              <- mod.loop$Df[3]
-          lme4qtl.loop$chisquared[3]      <- mod.loop$Chisq[3] # gen 
-          lme4qtl.loop$pvalue[3]          <- mod.loop$`Pr(>Chisq)`[3] # gen 
+          lme4qtl.loop$df[3]              <- mod.loop$npar[3]
+          lme4qtl.loop$Fvalue[3]          <- mod.loop$`F value`[3] # gen 
+          lme4qtl.loop$pvalue[3]          <- stats::pf(mod.loop$`F value`[3], 
+                                                        mod.loop$npar[3], 
+                                                        271, 
+                                                        lower.tail = FALSE)
           # cumulative output table
           lme4qtl.output <- rbind(lme4qtl.output,lme4qtl.loop) #bind to a cumulative list dataframe
           # print to keep track of it
@@ -299,8 +310,7 @@ for (i in 6:ncol(LowvMod_master_reordered_rm)) {
   } # end of if else loop
 } # end of for loop
 
-View(LowvMod_master_reordered_rm)
-
-head(LowvMod_master_reordered_rm)
+length(unique(lme4qtl.output$locus))
+View(lme4qtl.output)
 ```
 
