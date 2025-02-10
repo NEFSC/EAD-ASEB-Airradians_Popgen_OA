@@ -117,10 +117,8 @@ F2BF3O.pedigree.high            <- rbind(F2BF3O.SequoiaBootPed.high, F2BF3O.GetM
 
 ```
 
-### load life history data and subset as appropriate for pedigrees
 
-
-## Subset the vcf file
+## Load and subset the vcf file with all SNPs
 
 * objective: to call different vcf file subsets to run pedigree and parentage analysis
 

@@ -28,12 +28,21 @@ library(devtools)
 library(vcfR)
 ```
 
-### load data
 
-* vcf file
-* kinship matrices (as the covnarinace matrix in lme4qtl)
+### Load and subset the vcf file with all SNPs
 
-```{r load and prep loci matrices}
+* objective: to call different vcf file subsets to run pedigree and parentage analysis
+
+  - first lets see the calls to subset based on generation and life stage, below our master calls
+  
+  - **important** F0-12, F0-19, and F0-23 were sequenced but did not contribute to F1 offspring, omit
+  F0-12 is column 4
+  F0-19 is column 11
+  F0-23 is column 16
+  
+```{r list all IDs in the master vcf}
+
+# call th vcf file with all ids for the project 
 All.vcf <- vcfR::read.vcfR(here::here(getwd(),
                             "RAnalysis", 
                             "Data", 
@@ -41,31 +50,31 @@ All.vcf <- vcfR::read.vcfR(here::here(getwd(),
                             "03_prune", 
                             "out.7.phased.vcf.gz"), verbose = FALSE)
 
-#sibset for desired ids
-F0BF1O.vcf <- All.vcf[,c(1:26,63:139, 27:62)] # 138 samples, 2,947 variants, 16 chromosomes
+All.ListIDs    <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
 
-# genlight objects
-All.gen    <- All.vcf %>% vcfR::vcfR2genind() 
-F0BF1O.gen <- F0BF1O.vcf %>% vcfR::vcfR2genind() 
 
-# as matrix
-All.GenoM    <- as.matrix(All.gen)
-F0BF1O.GenoM <- as.matrix(F0BF1O.gen)
-View(F0BF1O.GenoM)
 ```
 
-```{r load kinsip matrices}
+```{r load kinsip matrix: Low v Moderate}
 
-F0BF1O_kinship.df <- data.frame(
+# load it in
+LowvMod_kinship.df <- data.frame(
                                read.csv(paste0(getwd(),
-                                               "/RAnalysis/Output/Popgen/pedigree/F0BF1O/F0BF1O_kinship.csv")),
+                                               "/RAnalysis/Output/Popgen/pedigree/Kinship_matrix_low_v_moderate.csv")),
                                          row.names=TRUE) 
-rownames(F0BF1O_kinship.df) <- gsub("\\-", ".", rownames(F0BF1O_kinship.df))
+# notive the column names for some reason converted the - to ., convert back so 
+# the rows are the same as columns, need this format to related back to the vcf and lifehistory data
+rownames(LowvMod_kinship.df) <- gsub("\\.(F\\d+)\\.", "\\1-", rownames(LowvMod_kinship.df)) # 
 
-
-F0BF1O_kinship.mx           <- as.matrix(F0BF1O_kinship.df)# convert to a matrix
+# convert to matrix
+LowvMod_kinship.mx           <- as.matrix(LowvMod_kinship.df)# convert to a matrix
 
 ```
+
+## Build strata metadata 
+
+* long custom dplyr pipe based on the id name, all correct and good to go
+* assings genertaion and treatment, combine these as well for single factor if needed
 
 ```{r strata metadata}
 
@@ -91,16 +100,132 @@ All.metadata <- as.data.frame(matrix(ncol = 1,
                                         "Low")) %>% 
                                 dplyr::mutate(gen_treatment = 
                                                 dplyr::case_when(gen == "F0" ~ "F0",
-                                                                 gen %in% c("F1","F2","F3") ~ paste0(gen,'_',treatment))) %>% 
-                                select(-V1) %>% 
-                                dplyr::mutate(id = gsub("\\-", ".", id))
+                                                                 gen %in% c("F1","F2","F3") ~
+                                                                   paste0(gen,'_',treatment))) %>% 
+                                select(-V1) 
 
 ```
 
 
-### run lme4qtl 
+# lme4qtl 
 
-```{r F0BF1O run QTL}
+
+### Prepare QTL: Low v Moderate (all generations)
+
+* prepare inputs, run checks to ensure data is balanced
+
+(1) covariance matrix (kinship) = LowvMod_kinship.mx
+  - ready to go as is, these ids need to be the ONLY ids in the following inputs #2 and 3
+(2) SNP matrix
+  - convert master vcf All.vcf to master genind
+  - convert master genind to master matrix 
+  - subset master matrix to target ids in the kinship covariance matrix
+(3) metadata
+  - subset master metadata to target ids in the kinship covariance matrix
+
+```{r Prep for QTL: Low v Moderate}
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# covariance matrix
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+head(LowvMod_kinship.mx) # use the ids to subet the next two datasets
+LowvMod_cov           <- Matrix::Matrix(LowvMod_kinship.mx, sparse = TRUE) # cov mx for lme4qtl
+# note: i dont know why by matrix doesnt lke th id, converts the hyphen to a period
+# i switch it back again below so that the ids match up, if we dont do this we get an error later
+colnames(LowvMod_cov) <- gsub("\\.(F\\d+)\\.", "\\1-", rownames(LowvMod_cov)) # colnames gotta match
+
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# SNP natrix
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# convert master vcf to master genind
+All.genind     <- All.vcf %>% vcfR::vcfR2genind()
+
+# convert master geneind to subset matrix based on ids in the cov kinship
+LowvMod_SNPs     <- tibble::rownames_to_column( # tibble wants to act on a df, move rownmaes to col
+                              (as.data.frame(as.matrix(All.genind))),# conversion genind - mx - df
+                              "id") %>% # call it id
+                  dplyr::filter(id %in% rownames(LowvMod_kinship.mx)) # filter id for those in kinship mx
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# metadata
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+LowvMod_metadata <- All.metadata %>% 
+                          dplyr::filter(id %in% rownames(LowvMod_kinship.mx)) # filter id for those in kinship mx
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# SANITY CHECKS! 
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+nrow(LowvMod_metadata) == nrow(LowvMod_kinship.mx) # TRUE
+
+nrow(LowvMod_SNPs) == nrow(LowvMod_kinship.mx) # TRUE
+
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# merge snp with metadata as master
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+LowvMod_master <- merge(LowvMod_metadata, LowvMod_SNPs, by = 'id')
+
+```
+
+
+### Run QTL: Low v Moderate (all generations)
+
+inputs: 
+- SNP data = LowvMod_SNP.mx
+- metadata = LowvMod_metadata
+- covariance matrix = LowvMod_kinship.mx
+
+```{r Run QTL: Low v Moderate}
+
+# reorder so the cov matrix matches the master 
+
+desired_order             <- rownames(LowvMod_cov)
+LowvMod_master_rownames   <- tibble::column_to_rownames(LowvMod_master, 'id')
+reorder_index             <- match(desired_order, rownames(LowvMod_master_rownames))
+LowvMod_master_reordered  <- LowvMod_master_rownames[reorder_index, ] %>% tibble::rownames_to_column('id')
+
+# check 
+
+LowvMod_master_reordered$id == rownames(LowvMod_cov) #  all true
+LowvMod_master_reordered$id == colnames(LowvMod_cov) #  all true
+
+# remove F0 from all data
+
+LowvMod_cov_rm_r  <- LowvMod_cov[!grepl("F0", rownames(LowvMod_cov)), , drop = FALSE]
+LowvMod_cov_rm_rc <- LowvMod_cov_rm_r[, !grepl("F0", colnames(LowvMod_cov_rm_r))]
+
+LowvMod_master_reordered_rm <- LowvMod_master_reordered %>% 
+                                  filter(!stringr::str_detect(id, "F0"))
+
+# check, F0 removed from all data
+
+LowvMod_master_reordered_rm$id == rownames(LowvMod_cov_rm_rc) #  all true
+LowvMod_master_reordered_rm$id == colnames(LowvMod_cov_rm_rc) #  all true
+
+# run a test on one snp
+
+m1 <- lme4qtl::relmatGlmer(CM084264_1_65408.1 ~ # SNP DV (must be 0 or 1)
+                            gen * treatment +# treatment ID
+                            (1|id), # random factor id
+                          LowvMod_master_reordered_rm, # data
+                          relmat=list(id = LowvMod_cov_rm_rc), # covariance matrix (id relatedness)
+                          family = binomial(link = "probit") # for binary SNP allele dat 
+                          )
+anova(m1) # get the p value
+summary(m1)
+
+car::Anova(m1) # Kenward-Roger-corrected
+afex::mixed(m1)
+drop1(m1)
+```
+
+```{r}
 
 data(dat40, package = "lme4qtl")
 
