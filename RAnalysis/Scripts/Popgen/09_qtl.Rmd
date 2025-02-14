@@ -14,8 +14,8 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 # SET WORKING DIRECTORY 
-knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
-#knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+#knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
 ```
 
 
@@ -26,6 +26,7 @@ library(tidyverse)
 library(lme4qtl)
 library(devtools)
 library(vcfR)
+library(lme4)
 ```
 
 
@@ -261,7 +262,29 @@ for (i in 6:ncol(LowvMod_master_reordered_rm)) {
   LowvMod_master_reordered_rm[,6]
   
 
-  if (length(unique(LowvMod_master_reordered_rm[,i])) == 2) {
+  if (length(unique(LowvMod_master_reordered_rm[,i])) == 3 | any(LowvMod_master_reordered_rm[,i] == 2) ) {
+  } # nada, if the locus has 3 unique integers or if there is a 2 (not just 0,1)
+  else { # run diagnostics!
+    # now run diagnostics and next if else call
+    # the lme4qtl model will not run if the group (pop) level
+    # contains all 1 or all 0, for example if all individuals from F1_Low are 0
+    
+    diagnostics <- LowvMod_master_reordered_rm %>% 
+                select(gen_treatment, i) %>% 
+                group_by(gen_treatment) %>% #%>% 
+                #summarise(total_sum = sum(i))
+                dplyr::summarise(
+                    n = n(),
+                    sum_zeros = sum(
+                       (dplyr::pick(.[[2]]) == 0)), # Count rows where value is 0
+                    sum_ones = sum(
+                       (dplyr::pick(.[[2]])  == 1))   # Count rows where value is 1
+                  )
+    
+    if (any(diagnostics$sum_zeros == 0) | any(diagnostics$sum_ones == 0)) {
+    } # nada, meaning that one of the group variables contained all 0 or all 1, lme4qtl wont run
+    else { # diagnostics passed, run lme4qtl!
+          
           # run qtl
           lme4qtl.run <- lme4qtl::relmatGlmer(LowvMod_master_reordered_rm[,i] ~
                                           #LowvMod_master_reordered_rm[,i] ~ # SNP DV (must be 0 or 1)
@@ -305,12 +328,12 @@ for (i in 6:ncol(LowvMod_master_reordered_rm)) {
           lme4qtl.output <- rbind(lme4qtl.output,lme4qtl.loop) #bind to a cumulative list dataframe
           # print to keep track of it
           # print(lme4qtl.loop) # print to monitor progress - tag out to quicken loop 
-  } else {
-    # nada
-  } # end of if else loop
+    } # end of SECOND if else loop, run lme4qtl
+  } # end of FIRST if else loop, diagnostics
 } # end of for loop
 
-length(unique(lme4qtl.output$locus))
-View(lme4qtl.output)
+lme4qtl.output_1 <- lme4qtl.output
+unique(lme4qtl.output_1$locus)
+View(lme4qtl.output_1)
 ```
 
