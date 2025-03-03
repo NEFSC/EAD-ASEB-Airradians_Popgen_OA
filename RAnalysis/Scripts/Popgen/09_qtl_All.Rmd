@@ -1,5 +1,5 @@
 ---
-title: "08_qtl"
+title: "09_qtl_All"
 author: "Samuel Gurr"
 date: "2025-01-29"
 output: html_document
@@ -14,8 +14,8 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 # SET WORKING DIRECTORY 
-knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
-#knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+#knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
 ```
 
 
@@ -56,19 +56,19 @@ All.ListIDs    <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
 
 ```
 
-```{r load kinsip matrix: Low v Moderate}
+```{r load kinsip matrix: All}
 
 # load it in
-LowvMod_kinship.df <- data.frame(
+All_kinship.df <- data.frame(
                                read.csv(paste0(getwd(),
-                                               "/RAnalysis/Output/Popgen/pedigree/Kinship_matrix_low_v_moderate.csv")),
+                                               "/RAnalysis/Output/Popgen/pedigree/Kinship_matrix_master.csv")),
                                          row.names=TRUE) 
 # notive the column names for some reason converted the - to ., convert back so 
 # the rows are the same as columns, need this format to related back to the vcf and lifehistory data
-rownames(LowvMod_kinship.df) <- gsub("\\.(F\\d+)\\.", "\\1-", rownames(LowvMod_kinship.df)) # 
+rownames(All_kinship.df) <- gsub("\\.(F\\d+)\\.", "\\1-", rownames(All_kinship.df)) # 
 
 # convert to matrix
-LowvMod_kinship.mx           <- as.matrix(LowvMod_kinship.df)# convert to a matrix
+All_kinship.mx           <- as.matrix(All_kinship.df)# convert to a matrix
 
 ```
 
@@ -131,10 +131,10 @@ All.metadata <- as.data.frame(matrix(ncol = 1,
 # ::::::::::::::::::::::::::::::::::::::::::::::::::
 
 # head(LowvMod_kinship.mx) # use the ids to subet the next two datasets
-LowvMod_cov           <- Matrix::Matrix(LowvMod_kinship.mx, sparse = TRUE) # cov mx for lme4qtl
+All_cov         <- Matrix::Matrix(All_kinship.mx, sparse = TRUE) # cov mx for lme4qtl
 # note: i dont know why by matrix doesnt lke th id, converts the hyphen to a period
 # i switch it back again below so that the ids match up, if we dont do this we get an error later
-colnames(LowvMod_cov) <- gsub("\\.(F\\d+)\\.", "\\1-", rownames(LowvMod_cov)) # colnames gotta match
+colnames(All_cov) <- gsub("\\.(F\\d+)\\.", "\\1-", rownames(All_cov)) # colnames gotta match
 
 
 # ::::::::::::::::::::::::::::::::::::::::::::::::::
@@ -145,10 +145,10 @@ colnames(LowvMod_cov) <- gsub("\\.(F\\d+)\\.", "\\1-", rownames(LowvMod_cov)) # 
 All.genind     <- All.vcf %>% vcfR::vcfR2genind()
 
 # convert master geneind to subset matrix based on ids in the cov kinship
-LowvMod_SNPs     <- tibble::rownames_to_column( # tibble wants to act on a df, move rownmaes to col
+All_SNPs     <- tibble::rownames_to_column( # tibble wants to act on a df, move rownmaes to col
                               (as.data.frame(as.matrix(All.genind))),# conversion genind - mx - df
                               "id") %>% # call it id
-                  dplyr::filter(id %in% rownames(LowvMod_kinship.mx)) %>%  # filter id for those in kinship mx
+                  dplyr::filter(id %in% rownames(All_kinship.mx)) %>%  # filter id for those in kinship mx
                   # lme4qtl family = binomial(link = "probit") only recognized 0,1 data 
                   # the current file before the call before contains duplicate colnames as
                   # '__.0' or '___.1' for loci, 0 being data as 2,1 and 1 being data as 0,1
@@ -159,23 +159,23 @@ LowvMod_SNPs     <- tibble::rownames_to_column( # tibble wants to act on a df, m
 # metadata
 # ::::::::::::::::::::::::::::::::::::::::::::::::::
 
-LowvMod_metadata <- All.metadata %>% 
-                          dplyr::filter(id %in% rownames(LowvMod_kinship.mx)) # filter id for those in kinship mx
+All_metadata <- All.metadata %>% 
+                          dplyr::filter(id %in% rownames(All_kinship.mx)) # filter id for those in kinship mx
 
 # ::::::::::::::::::::::::::::::::::::::::::::::::::
 # SANITY CHECK - if the three datafiles hace the same amount of data
 # ::::::::::::::::::::::::::::::::::::::::::::::::::
 
-nrow(LowvMod_metadata) == nrow(LowvMod_kinship.mx) # TRUE
+nrow(All_metadata) == nrow(All_kinship.mx) # TRUE
 
-nrow(LowvMod_SNPs) == nrow(LowvMod_kinship.mx) # TRUE
+nrow(All_SNPs) == nrow(All_kinship.mx) # TRUE
 
 
 # ::::::::::::::::::::::::::::::::::::::::::::::::::
 # merge snp with metadata as master
 # ::::::::::::::::::::::::::::::::::::::::::::::::::
 
-LowvMod_master <- merge(LowvMod_metadata, LowvMod_SNPs, by = 'id')
+All_master <- merge(All_metadata, All_SNPs, by = 'id')
 
 
 # ::::::::::::::::::::::::::::::::::::::::::::::::::
@@ -183,17 +183,17 @@ LowvMod_master <- merge(LowvMod_metadata, LowvMod_SNPs, by = 'id')
 # ::::::::::::::::::::::::::::::::::::::::::::::::::
 # new 'master_reordered' for QTL 
 
-desired_order             <- rownames(LowvMod_cov)
-LowvMod_master_rownames   <- tibble::column_to_rownames(LowvMod_master, 'id')
-reorder_index             <- match(desired_order, rownames(LowvMod_master_rownames))
-LowvMod_master_reordered  <- LowvMod_master_rownames[reorder_index, ] %>% tibble::rownames_to_column('id')
+desired_order             <- rownames(All_cov)
+All_master_rownames       <- tibble::column_to_rownames(All_master, 'id')
+reorder_index             <- match(desired_order, rownames(All_master_rownames))
+All_master_reordered      <- All_master_rownames[reorder_index, ] %>% tibble::rownames_to_column('id')
 
 # ::::::::::::::::::::::::::::::::::::::::::::::::::
 # SANITY CHECK - does the order in fact match?
 # ::::::::::::::::::::::::::::::::::::::::::::::::::
 
-LowvMod_master_reordered$id == rownames(LowvMod_cov) #  all true
-LowvMod_master_reordered$id == colnames(LowvMod_cov) #  all true
+All_master_reordered$id == rownames(All_cov) #  all true
+All_master_reordered$id == colnames(All_cov) #  all true
 
 ```
 
@@ -201,9 +201,8 @@ LowvMod_master_reordered$id == colnames(LowvMod_cov) #  all true
 ### Run QTL: Low v Moderate (all generations)
 
 inputs: 
-- SNP data = LowvMod_SNP.mx
-- metadata = LowvMod_metadata
-- covariance matrix = LowvMod_kinship.mx
+- SNP data and metadata = All_master_reordered
+- covariance matrix = All_cov
 
 model:
 
@@ -234,26 +233,26 @@ model:
 # remove F0 from all data
 
 # cov kinship matrix: removed all occurance of string 'F0' from rows (r) and columns (c) 
-LowvMod_cov_rm_r  <- LowvMod_cov[!grepl("F0", rownames(LowvMod_cov)), , drop = FALSE]
-LowvMod_cov_rm_rc <- LowvMod_cov_rm_r[, !grepl("F0", colnames(LowvMod_cov_rm_r))]
+All_cov_rm_r  <- All_cov[!grepl("F0", rownames(All_cov)), , drop = FALSE]
+All_cov_rm_rc <- All_cov_rm_r[, !grepl("F0", colnames(All_cov_rm_r))]
 
 # snp data and metadata: omit columns that contain with 'F0' string 
-LowvMod_master_reordered_rm <- LowvMod_master_reordered %>% 
+All_master_reordered_rm <- All_master_reordered %>% 
                                   filter(!stringr::str_detect(id, "F0"))
 
 # check, F0 removed from all data
 
-LowvMod_master_reordered_rm$id == rownames(LowvMod_cov_rm_rc) #  all true
-LowvMod_master_reordered_rm$id == colnames(LowvMod_cov_rm_rc) #  all true
+All_master_reordered_rm$id == rownames(All_cov_rm_rc) #  all true
+All_master_reordered_rm$id == colnames(All_cov_rm_rc) #  all true
 
 # run a test on one snp
 
 m1 <- lme4qtl::relmatGlmer(CM084264_1_65408.1 ~ # SNP DV (must be 0 or 1)
                             gen * treatment +# treatment ID
                             (1|id), # random factor id
-                          LowvMod_master_reordered_rm, # data
-                          relmat=list(id = LowvMod_cov_rm_rc), # covariance matrix (id relatedness)
-                          family = binomial(link = "probit") # for binary SNP allele dat 
+                          All_master_reordered_rm, # data
+                          relmat=list(id = All_cov_rm_rc), # covariance matrix (id relatedness)
+                          family = binomial(link = "probit") # for binary SNP allele data 
                           )
 anova(m1) # does not get the p value
 summary(m1) # summary stats
@@ -264,6 +263,10 @@ car::Anova(m1) # Kenward-Roger-corrected - I think this is ideal for us
 
   - *Caution*: this takes a veerry long time, upwards of 24-36 hours
   - If already run and output, *skip this chunk and read the previous output*
+  
+  inputs: 
+- SNP data and metadata = All_master_reordered_rm (removed 'rm' F0 broodstock without kinship from All_master_reordered)
+- covariance matrix = All_cov_rm_rc (removed 'rm' F0 broodstock without kinship fromall rows 'r' and columns 'c')
   
 ```{r Loop run QTL (all loci): Low v Moderate}
 
@@ -278,22 +281,22 @@ colnames(lme4qtl.loop) <- c('stat',
                          'pvalue') # names for comuns in the for loop
 
 # what column in 'LowvMod_master_reordered_rm' do SNPs begin metadata listed beforehand)?
-colnames(LowvMod_master_reordered_rm) # starts at column 6
+colnames(All_master_reordered_rm) # starts at column 6
 
 # now with in information known,  run lme4qtl for each locus
-for (i in 6:ncol(LowvMod_master_reordered_rm)) {
+for (i in 6:ncol(All_master_reordered_rm)) {
   
-  LowvMod_master_reordered_rm[,6]
+  All_master_reordered_rm[,6]
   
 
-  if (length(unique(LowvMod_master_reordered_rm[,i])) == 3 | any(LowvMod_master_reordered_rm[,i] == 2) ) {
+  if (length(unique(All_master_reordered_rm[,i])) == 3 | any(All_master_reordered_rm[,i] == 2) ) {
   } # nada, if the locus has 3 unique integers or if there is a 2 (not just 0,1)
   else { # run diagnostics!
     # now run diagnostics and next if else call
     # the lme4qtl model will not run if the group (pop) level
     # contains all 1 or all 0, for example if all individuals from F1_Low are 0
     
-    diagnostics <- LowvMod_master_reordered_rm %>% 
+    diagnostics <- All_master_reordered_rm %>% 
                 select(gen_treatment, i) %>% 
                 group_by(gen_treatment) %>% #%>% 
                 #summarise(total_sum = sum(i))
@@ -310,12 +313,12 @@ for (i in 6:ncol(LowvMod_master_reordered_rm)) {
     else { # diagnostics passed, run lme4qtl!
           
           # run qtl
-          lme4qtl.run <- lme4qtl::relmatGlmer(LowvMod_master_reordered_rm[,i] ~
-                                          #LowvMod_master_reordered_rm[,i] ~ # SNP DV (must be 0 or 1)
+          lme4qtl.run <- lme4qtl::relmatGlmer(All_master_reordered_rm[,i] ~
+                                          #All_master_reordered_rm[,i] ~ # SNP DV (must be 0 or 1)
                                           gen * treatment +# treatment ID, both between subjsect, no slope needed
                                           (1|id), # random factor id
-                                          LowvMod_master_reordered_rm, # data
-                                          relmat=list(id = LowvMod_cov_rm_rc), # covariance matrix (id relatedness)
+                                          All_master_reordered_rm, # data
+                                          relmat=list(id = All_cov_rm_rc), # covariance matrix (id relatedness)
                                           family = binomial(link = "probit") # for binary SNP allele dat 
                                   )
           # get anova stats for the model
@@ -323,7 +326,7 @@ for (i in 6:ncol(LowvMod_master_reordered_rm)) {
           mod.loop <- anova(lme4qtl.run)
           # write out to 
           lme4qtl.loop$stat[c(1:3)]       <- "lme4QTL, binomial probit"
-          lme4qtl.loop$locus[c(1:3)]      <- colnames(LowvMod_master_reordered_rm[i])
+          lme4qtl.loop$locus[c(1:3)]      <- colnames(All_master_reordered_rm[i])
           # gen
           lme4qtl.loop$effect[1]          <- "generation"
           lme4qtl.loop$df[1]              <- mod.loop$npar[1]
