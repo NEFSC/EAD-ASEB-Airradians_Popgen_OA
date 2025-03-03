@@ -20,7 +20,7 @@ knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EA
 library(tidyverse)
 library(ape)
 library(plotgardener) # BiocManager::install("plotgardener")
-BiocManager::install("rnaseqGene")
+# BiocManager::install("rnaseqGene")
 ```
 
 ### Set path:
@@ -90,6 +90,7 @@ Airradians_chrom_bpcumul <- Airradians_gff %>%
 
 
 Airradians_gff_bpcumul <- merge(Airradians_chrom_bpcumul, Airradians_gff)
+View(Airradians_gff_bpcumul)
 ```
 
 ### Load DESEq2 results for F1 nad F2:
@@ -130,7 +131,7 @@ F2_DESeq2_results_coordinates <- merge(Airradians_gff_bpcumul, F2_DESeq2_results
 write.csv(F1_DESeq2_results_coordinates, "Output/Transcriptomics/DESeq2/F1_juveniles/F1_DESeq2results_coordinates.csv")
 write.csv(F2_DESeq2_results_coordinates, "Output/Transcriptomics/DESeq2/F2_juveniles/F2_DESeq2results_coordinates.csv")
 ```
-
+* try some figures, manhattan, pie segment, etc.
 ```{r}
 
 axis_set$chromosome_num
@@ -147,7 +148,7 @@ All_DEGs <- rbind(F1_DESeq2_results_coordinates,
                   F2_DESeq2_results_coordinates)
 manhplot <- ggplot(All_DEGs, 
                    aes(
-                    x = (start + bp_cumulative), y = as.numeric(log2FoldChange),
+                    x = (start + bp_cumulative), y = abs(as.numeric(log2FoldChange)),
                     color = as_factor(chromosome_num), shape = Gen, size = log10(padj)
                   )) +
                     # geom_hline(
@@ -159,12 +160,12 @@ manhplot <- ggplot(All_DEGs,
                       label = axis_set$chromosome_num,
                       breaks = axis_set$center
                     ) +
-                    scale_color_manual(values = rep(
-                    c("#276FBF", "#183059"),
+                    scale_color_manual(values = 
+                                          rep(c("#276FBF", "#183059"),
                     unique(length(axis_set$chromosome_num))
                     )) + 
                     theme_bw() +
-                    facet_wrap(~Gen)# +
+                    facet_wrap(~Gen*direction)# +
                     # scale_y_continuous(expand = c(0, 0), limits = c(0, ylim)) +
                     # scale_color_manual(values = rep(
                     #   c("#276FBF", "#183059"),
@@ -183,4 +184,77 @@ manhplot <- ggplot(All_DEGs,
                     #   axis.title.y = element_markdown(),
                     #   axis.text.x = element_text(angle = 60, size = 8, vjust = 0.5)
                     # )
+
+
+ggplot( (All_DEGs %>% group_by(chromosome_num, Gen) %>% summarise(n = n())), 
+       aes(x = "", y = n, fill = as.character(chromosome_num))) + 
+  geom_bar(stat = "identity", 
+           width = 1, 
+           position = position_fill()) +
+  scale_fill_brewer(palette="BrBG") +
+  theme_classic() +
+  coord_polar(theta = "y") + 
+  facet_wrap( ~ Gen)
+
+# set of 20 random colors
+library(randomcoloR)
+library(geomtextpath)
+
+colors <- distinctColorPalette(20)
+df_F1 <- (All_DEGs %>% filter(Gen %in% 'F1') %>% 
+            group_by(chromosome_num, Gen) %>% 
+            summarise(n = n())) %>% 
+            mutate(chromosome_num=fct_relevel(as.factor(chromosome_num),c('1','2','3','4',
+                                                               '5','6','7','8',
+                                                               '9','10','11','12',
+                                                               '13','14','15','16')))
+
+df_F1$chromosome_num
+df_F2 <- (All_DEGs %>% filter(Gen %in% 'F2') %>% group_by(chromosome_num, Gen) %>% summarise(n = n()))
+Pie_F1 <- ggplot(df_F1, aes(x = 1, y = n, fill = as.character(chromosome_num))) +
+              geom_bar(width = 1, stat = "identity", color = "black") +
+              coord_polar("y", start = 0) +
+              scale_fill_manual(values = colors, guide = "none") +
+              ggtitle("A") +
+              # labs(fill = "Somatic Gene", x = NULL) +
+              theme(panel.background = element_blank(), plot.background = element_blank(),
+                    axis.text = element_blank(),
+                    axis.ticks = element_blank()) +
+              geom_labelpath(data =  df_F1, position = position_stack(vjust = 0.5),
+                               aes(x = 1.7, y = n, label = paste0(chromosome_num)),
+                               size = 4.5, show.legend = FALSE) 
+
+Pie_F2 <- ggplot(df_F2, aes(x = 1, y = n, fill = as.character(chromosome_num))) +
+              geom_bar(width = 1, stat = "identity", color = "black") +
+              coord_polar("y", start = 0) +
+              scale_fill_manual(values = colors, guide = "none") +
+              ggtitle("B") +
+              # labs(fill = "Somatic Gene", x = NULL) +
+              theme(panel.background = element_blank(), plot.background = element_blank(),
+                    axis.text = element_blank(),
+                    axis.ticks = element_blank()) +
+              geom_labelpath(data =  df_F2, position = position_stack(vjust = 0.5),
+                               aes(x = 1.7, y = n, label = paste0(chromosome_num)),
+                               size = 4.5, show.legend = FALSE) 
+
+ggpubr::ggarrange(Pie_F1, Pie_F2, nrow = 1)
+
+library(forcats)
+df_F1 |>
+    # mutate(chromosome_num = fct_reorder(chromosome_num, n)) |>
+    ggplot(aes(x = n, y = chromosome_num)) +
+    geom_bar(aes(x = 30), stat = "identity", fill = '#e0e0e0') +
+    geom_bar(stat = "identity") +
+    geom_text(aes(x = n,
+                  label = sprintf("%2.1f  ", round(n, 1))
+                  ), adj = 0, nudge_x = 1, size = 3) +
+    # facet_wrap(~ n < median(n),  scales = 'free_y', ncol = 1) +
+    scale_x_continuous(breaks = c(0, 10, 20, 30)) +
+    labs(x = 'DEGs', y = '') +
+    theme(
+        panel.background = element_blank(),
+        strip.text.x = element_blank(),
+        axis.text.y = element_text(hjust = 1, size = rel(1)),
+        panel.grid = element_blank()
+    )
 ```

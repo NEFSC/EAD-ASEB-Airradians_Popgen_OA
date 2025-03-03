@@ -32,6 +32,7 @@ library(tidyverse)
 library(kinship2)
 library(ribd) #install.packages('ribd')
 library(sequoia)
+library(popkin)
 ```
 
 ### load pedigree output from custom functions SequoiaBootPed and GetMaybeRelBootPed in 07_pedigree.Rmd
@@ -148,6 +149,36 @@ All_LOW_MOD.vcf <- All.vcf[,c(1:3, 5:10, 12:15, 17:139, # F0 and all F1 offsprin
                               344:392)] # F3 offspring from moderate OA
 
 All_LOW_MOD.ListIDs     <- colnames(All_LOW_MOD.vcf@gt[,2:length(colnames(All_LOW_MOD.vcf@gt))])
+
+```
+
+```{r strata metadata}
+
+# list ids for all individuals int he vcf file
+All.ListIDs  <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+
+# final metadata
+All.metadata <- as.data.frame(matrix(ncol = 1,
+                                     nrow = length(All.ListIDs))) %>% 
+                          mutate(id = All.ListIDs,
+                                 type = dplyr::case_when(grepl("-B", id) ~ "broodstock", TRUE ~ 'juvenile'),
+                                 gen = dplyr::case_when(grepl("F0", id) ~ "F0",
+                                                             grepl("F1", id) ~ "F1",
+                                                             grepl("F2", id) ~ "F2",
+                                                             grepl("F3", id) ~ "F3",
+                                                             TRUE ~ "F1"),
+                                 treatment = dplyr::case_when(
+                                        grepl("F0", id) ~ "none",
+                                        grepl("pH7\\.",id) ~ "High",
+                                        grepl(c("pH75\\.|.201.|.203.|.204.|.251.|.253.|.254.|.301.|.303.|.304.|.351.|.352.|.353.|.354."), id) ~
+                                        "Moderate",
+                                        grepl(c("pH8|.101.|.103.|.104.|.153.|.154.|.155.|.3.|.4.|.5."), id) ~ 
+                                        "Low")) %>% 
+                                dplyr::mutate(gen_treatment = 
+                                                dplyr::case_when(gen == "F0" ~ "F0",
+                                                                 gen %in% c("F1","F2","F3") ~
+                                                                   paste0(gen,'_',treatment))) %>% 
+                                select(-V1) 
 
 ```
 
@@ -334,6 +365,10 @@ All.pedigree <- rbind( # F1 offspring w/blank F0
 # and merge with the lifehistory data to obtain sex
 # sex == 4 was assigned for all offspring, whereas 1 or 2 was assigned for parents that solely contributed sperm and egg
 # pedtools::ped only recognizes sex 0,1, and 2 where 0 is unknown
+
+# (1)  merge with the lifehistory data to obtain sex
+# sex == 4 was assigned for all offspring, whereas 1 or 2 was assigned for parents that solely contributed sperm and egg
+# pedtools::ped only recognizes sex 0,1, and 2 where 0 is unknown
 All.pedigree.sex <- merge(
                           All.pedigree, # bind F1 offspring and F0 broodstokc pedigree
                           (All.LifeHistData.2 %>% select(id, sex)), # merge with lifehistory to get sex
@@ -345,11 +380,33 @@ All.pedigree.sex <- merge(
                                               sex %in% NA ~ 0,
                                               .default = sex))
 
+
+# (2)  Optional! merge with metadata to reorder
+# why? later we will use plot_popkin with groups by gen*treatment, 
+# the order here is extremely influenctial on that final plot, so we will add gen treatment metadata
+# then reorder the data before making the kinship matrix
+?fct_reorder
+All.pedigree.sex.metadata <- merge(All.pedigree.sex, All.metadata, by = 'id') %>% 
+                                      select(id, dam, sire, sex, gen_treatment, type) %>% 
+                                      dplyr::arrange(match(gen_treatment, c("F0", 
+                                                                      "F1_Low", 
+                                                                      "F1_Moderate",
+                                                                      "F2_Low", 
+                                                                      "F2_Moderate",
+                                                                      "F2_High",
+                                                                      "F3_Low", 
+                                                                      "F3_Moderate",
+                                                                      "F3_High")), desc(type)) %>% # arrange order of factors                                       # here foing from F0 to F3 (low nad moderate, luckily alphabetical!)
+                                      select(!gen_treatment) # dont need this column anymore 
+
+nrow(All.pedigree.sex.metadata) == nrow(All.pedigree.sex) #must be TRUE
+
+
 # ped
-All.pedform <- pedtools::ped(id = All.pedigree.sex$id,
-                                        fid = All.pedigree.sex$dam,
-                                        mid = All.pedigree.sex$sire,
-                                        sex = All.pedigree.sex$sex)
+All.pedform <- pedtools::ped(id = All.pedigree.sex.metadata$id,
+                                        fid = All.pedigree.sex.metadata$dam,
+                                        mid = All.pedigree.sex.metadata$sire,
+                                        sex = All.pedigree.sex.metadata$sex)
 
 # ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 # Kinship matrix using ribd::kinship
@@ -359,7 +416,7 @@ All.kinship <- ribd::kinship(All.pedform)
 
 # wrtie the kinship matrix
 write.csv(as.matrix(All.kinship),
-          paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/Kinship_matrix_master.csv"),
+          paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/kinship_matrix_master.csv"),
           row.names=TRUE)
 ```
 
@@ -394,7 +451,9 @@ LowvMod.pedigree <- rbind( # F1 offspring w/blank F0
 # ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 # Pedigree using pedtools::ped
 # ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
-# and merge with the lifehistory data to obtain sex
+
+
+# (1)  merge with the lifehistory data to obtain sex
 # sex == 4 was assigned for all offspring, whereas 1 or 2 was assigned for parents that solely contributed sperm and egg
 # pedtools::ped only recognizes sex 0,1, and 2 where 0 is unknown
 LowvMod.pedigree.sex <- merge(
@@ -408,21 +467,201 @@ LowvMod.pedigree.sex <- merge(
                                               sex %in% NA ~ 0,
                                               .default = sex))
 
-# ped
-LowvMod.pedform <- pedtools::ped(id = LowvMod.pedigree.sex$id,
-                                        fid = LowvMod.pedigree.sex$dam,
-                                        mid = LowvMod.pedigree.sex$sire,
-                                        sex = LowvMod.pedigree.sex$sex)
+# (2)  Optional! merge with metadata to reorder
+# why? later we will use plot_popkin with groups by gen*treatment, 
+# the order here is extremely influenctial on that final plot, so we will add gen treatment metadata
+# then reorder the data before making the kinship matrix
+?fct_reorder
+LowvMod.pedigree.sex.metadata <- merge(LowvMod.pedigree.sex, All.metadata, by = 'id') %>% 
+                                      select(id, dam, sire, sex, gen_treatment, type) %>% 
+                                      dplyr::arrange(gen_treatment, desc(type)) %>% # arrange order of factors 
+                                      # here foing from F0 to F3 (low nad moderate, luckily alphabetical!)
+                                      select(!c(gen_treatment, type)) # dont need this column anymore 
+
+nrow(LowvMod.pedigree.sex.metadata) == nrow(LowvMod.pedigree.sex) #must be TRUE
+
+
+# ped, make pedigree
+LowvMod.pedform <- pedtools::ped(id = LowvMod.pedigree.sex.metadata$id,
+                                        fid = LowvMod.pedigree.sex.metadata$dam,
+                                        mid = LowvMod.pedigree.sex.metadata$sire,
+                                        sex = LowvMod.pedigree.sex.metadata$sex)
 
 # ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 # Kinship matrix using ribd::kinship
 # ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
-LowvMod.kinship <- ribd::kinship(LowvMod.pedform)
+LowvMod.kinship <- ribd::kinship(LowvMod.pedform )
 
 # wrtie the kinship matrix
 write.csv(as.matrix(LowvMod.kinship),
-          paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/Kinship_matrix_low_v_moderate.csv"),
+          paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/kinship_matrix_low_v_moderate.csv"),
           row.names=TRUE)
 ```
 
+
+## Visualize with plot_popkin
+```{r Low v Mod visualize kinship matrix}
+?plot_popkin
+# in plot_pokin we want to group by subopulation 
+# below I call the metadata for the inserted kinship matrix, and 
+# sort by broodstock jubenile (type) and gneration treatnet
+LowvMod.kinship.metadata <- merge(LowvMod.pedigree.sex, All.metadata, by = 'id') %>% 
+                                select(id, gen_treatment, type) %>% 
+                                dplyr::arrange(gen_treatment, desc(type)) %>% # arrange order of factors 
+                              # here foing from F0 to F3 (low nad moderate, luckily alphabetical!)
+                                select(!type) # dont need this column anymore 
+                                
+# uick snaity check                                
+length(rownames(LowvMod.kinship)) == nrow(LowvMod.kinship.metadata) # must be TRUE sanity check
+
+# create a matrix for th emetadata as directed in the readme
+rownames(LowvMod.kinship.metadata) <- LowvMod.kinship.metadata[, 1]
+LowvMod.kinship.metadata           <- LowvMod.kinship.metadata %>% select(!id)
+LowvMod.kinship.matrix             <- as.matrix(LowvMod.kinship.metadata)
+
+?RColorBrewer
+# col in the plot below, view the possibilities that 
+# are colorblind friendsly
+RColorBrewer::display.brewer.all(n=NULL, 
+                                 type="all", 
+                                 select=NULL, 
+                                 exact.n=TRUE, 
+                                 colorblindFriendly=FALSE)
+colors.pallete <- RColorBrewer::brewer.pal(10, "BrBG")
+
+
+# plot it, save it
+pdf(paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/Heatmap_kinship_matrix_low_v_moderate.pdf"), width = 7, height = 5)
+popkin::plot_popkin(LowvMod.kinship,
+                                                titles = NULL,
+                                                col = colors.pallete,
+                                                col_n = 100, # number of colors to use in the heatmpa (spectrum of)
+                                                mar = NULL,
+                                                mar_pad = 0.2,
+                                                oma = 1.5,
+                                                diag_line = FALSE,
+                                                panel_letters = toupper(letters),
+                                                panel_letters_cex = 1.5,
+                                                panel_letters_adj = -0.1,
+                                                ylab = "Individuals",
+                                                ylab_adj = NA,
+                                                ylab_line = 0,
+                                                ylab_side = 2,
+                                                ylab_per_panel = FALSE,
+                                                layout_add = TRUE,
+                                                layout_rows = 1,
+                                                leg_per_panel = FALSE,
+                                                leg_title = "Kinship",
+                                                leg_cex = 1,
+                                                leg_n = 5,
+                                                leg_mar = 3,
+                                                leg_width = 0.3,
+                                                leg_column = NA,
+                                                names = FALSE, # names of each individual
+                                                names_cex = 1,
+                                                names_line = NA,
+                                                names_las = 0,
+                                                labs = LowvMod.kinship.matrix, # subpopulation vector
+                                                labs_cex = 1,
+                                                labs_las = 2, # angle in graphics::mtext() format
+                                                labs_line = 0,
+                                                labs_sep = TRUE, # adds line to sep sub groups
+                                                labs_lwd = 1,
+                                                labs_col = "black",
+                                                labs_ticks = TRUE,
+                                                labs_text = TRUE,
+                                                labs_even = FALSE,
+                                                null_panel_data = FALSE,
+                                                weights = NULL,
+                                                raster = is.null(weights),
+                                                sym = FALSE
+                                              )
+dev.off()
+```
+
+```{r Master all visualize kinship matrix}
+?plot_popkin
+# in plot_pokin we want to group by subopulation 
+# below I call the metadata for the inserted kinship matrix, and 
+# sort by broodstock jubenile (type) and gneration treatnet
+All.pedigree.metadata <- merge(All.pedigree.sex, All.metadata, by = 'id') %>% 
+                                select(id, gen_treatment, type) %>% 
+                                dplyr::arrange(match(gen_treatment, c("F0", 
+                                                                      "F1_Low", 
+                                                                      "F1_Moderate",
+                                                                      "F2_Low", 
+                                                                      "F2_Moderate",
+                                                                      "F2_High",
+                                                                      "F3_Low", 
+                                                                      "F3_Moderate",
+                                                                      "F3_High")), 
+                                               desc(type)) %>% # arrange order of factors 
+                              # here foing from F0 to F3 (low nad moderate, luckily alphabetical!)
+                                select(!type) # dont need this column anymore 
+                                
+# uick snaity check                                
+length(rownames(All.kinship)) == nrow(All.pedigree.metadata) # must be TRUE sanity check
+
+# create a matrix for th emetadata as directed in the readme
+rownames(All.pedigree.metadata) <- All.pedigree.metadata[, 1]
+All.pedigree.metadata           <- All.pedigree.metadata %>% select(!id)
+All.pedigree.matrix             <- as.matrix(All.pedigree.metadata)
+
+# col in the plot below, view the possibilities that 
+# are colorblind friendsly
+RColorBrewer::display.brewer.all(n=NULL, 
+                                 type="all", 
+                                 select=NULL, 
+                                 exact.n=TRUE, 
+                                 colorblindFriendly=FALSE)
+colors.pallete <- RColorBrewer::brewer.pal(10, "BrBG") # this looks nice 
+
+# plot it, save it
+pdf(paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/Heatmap_kinship_matrix_master.pdf"), width = 7, height = 5)
+popkin::plot_popkin(All.kinship,
+                                                titles = NULL,
+                                                col = colors.pallete,
+                                                col_n = 100, # number of colors to use in the heatmpa (spectrum of)
+                                                mar = NULL,
+                                                mar_pad = 0.2,
+                                                oma = 1.5,
+                                                diag_line = FALSE,
+                                                panel_letters = toupper(letters),
+                                                panel_letters_cex = 1.5,
+                                                panel_letters_adj = -0.1,
+                                                ylab = "Individuals",
+                                                ylab_adj = NA,
+                                                ylab_line = 0,
+                                                ylab_side = 2,
+                                                ylab_per_panel = FALSE,
+                                                layout_add = TRUE,
+                                                layout_rows = 1,
+                                                leg_per_panel = FALSE,
+                                                leg_title = "Kinship",
+                                                leg_cex = 1,
+                                                leg_n = 5,
+                                                leg_mar = 3,
+                                                leg_width = 0.3,
+                                                leg_column = NA,
+                                                names = FALSE, # names of each individual
+                                                names_cex = 1,
+                                                names_line = NA,
+                                                names_las = 0,
+                                                labs = All.pedigree.matrix, # subpopulation vector
+                                                labs_cex = 1,
+                                                labs_las = 2, # angle in graphics::mtext() format
+                                                labs_line = 0,
+                                                labs_sep = TRUE, # adds line to sep sub groups
+                                                labs_lwd = 1,
+                                                labs_col = "black",
+                                                labs_ticks = TRUE,
+                                                labs_text = TRUE,
+                                                labs_even = FALSE,
+                                                null_panel_data = FALSE,
+                                                weights = NULL,
+                                                raster = is.null(weights),
+                                                sym = FALSE
+                                              )
+dev.off()
+```
