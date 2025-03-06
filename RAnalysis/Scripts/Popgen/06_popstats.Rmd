@@ -25,8 +25,8 @@ author: "Samuel Gurr"
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 # SET WORKING DIRECTORY 
-knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
-#knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+#knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
 ```
 
 ## load libraries
@@ -131,6 +131,18 @@ Why? we want the metadata to be recognized as the strate /pop when making the ge
   
 ```{r merge snp metadata to prep geneind}
 
+# All (F0  F3 all treatments)
+# first build a preliminary genind, we can movert this to a matrix
+All.gen   <- All.vcf %>% vcfR::vcfR2genind() 
+# convert matrix to a dataframe and move the rownames to the first column as 'id'
+All.GenoM <- as.matrix(All.gen)
+All.DF    <- as.data.frame(All.GenoM) %>% tibble::rownames_to_column(., "id")
+nrow(All.DF) # 391
+# merge the metadata by 'id' 
+All.DF.meta <- merge(All.metadata,All.DF, by = 'id')
+nrow(All.DF.meta) # 391 - did not loose data, good to go! 
+
+
 # Low v Mod 
 # first build a preliminary genind, we can movert this to a matrix
 F1F2F3_LOW_MOD.gen   <- F1F2F3_LOW_MOD.vcf %>% vcfR::vcfR2genind() 
@@ -139,11 +151,11 @@ F1F2F3_LOW_MOD.GenoM <- as.matrix(F1F2F3_LOW_MOD.gen)
 F1F2F3_LOW_MOD.DF    <- as.data.frame(F1F2F3_LOW_MOD.GenoM) %>% tibble::rownames_to_column(., "id")
 nrow(F1F2F3_LOW_MOD.DF) # 289
 # merge the metadata by 'id' 
-F1F2F3_LOW_MOD.DF.meta <- cbind(F1F2F3_LOW_MOD.DF, F1F2F3_LOW_MOD.metadata, by = 'id')
+F1F2F3_LOW_MOD.DF.meta <- cbind(F1F2F3_LOW_MOD.metadata F1F2F3_LOW_MOD.DF, by = 'id')
 nrow(F1F2F3_LOW_MOD.DF.meta) # 289 - did not loose data, good to go! 
 
 
-# All
+# F1 F2 F3 all
 # first build a preliminary genind, we can movert this to a matrix
 F1F2F3_All.gen   <- F1F2F3_All.vcf %>% vcfR::vcfR2genind() 
 # convert matrix to a dataframe and move the rownames to the first column as 'id'
@@ -156,6 +168,76 @@ nrow(F1F2F3_All.DF.meta) # 366 - did not loose data, good to go!
 
 ```
 
+### Summarize the loci genotypes (with the All.<data> only)
+
+  - 0 = homozygeous reference
+  - 1 = heterzygous alternate
+  - 2 = homozygous alternate 
+
+* input: 
+  - All.DF.meta
+  
+* objective: 
+  - output the total number and percent of individuals with 0, 1, and 2 at each locus - summarise mean SE 
+  - group statistics in the bullet above by generation and treatment  
+
+```{r}
+All.DF.meta <- All.DF.meta %>%  dplyr::select(!matches("\\.0$")) # only call SNPs <id>.1
+loop.output <- data.frame() # start dataframe 
+loop.df     <- data.frame(matrix(nrow = 1, ncol = 7)) # create dataframe to save cumunalitively during for loop
+colnames(loop.df) <- c('locus', 
+                       'n_allele_0',
+                       'perc_allele_0',
+                       'n_allele_1',
+                       'perc_allele_1',
+                       'n_allele_2',
+                       'perc_allele_2') # names for columns in the for loop
+
+for (i in 6:ncol(All.DF.meta)) { # first 6 columns are metadata
+  num_indivs <- nrow(All.DF.meta)
+  
+  loop.df$locus         <- colnames(All.DF.meta[i])
+  loop.df$n_allele_0    <- nrow(All.DF.meta %>% filter(.[[i]] %in% 0))
+  loop.df$perc_allele_0 <- signif((loop.df$n_allele_0 / num_indivs)*100, digits = 3)
+  
+  loop.df$n_allele_1    <- nrow(All.DF.meta %>% filter(.[[i]] %in% 1))
+  loop.df$perc_allele_1 <- signif((loop.df$n_allele_1 / num_indivs)*100, digits = 3)
+  
+  loop.df$n_allele_2    <- nrow(All.DF.meta %>% filter(.[[i]] %in% 2))
+  loop.df$perc_allele_2 <- signif((loop.df$n_allele_2 / num_indivs)*100, digits = 3)
+  
+  # cumulative output 
+  loop.output <- rbind(loop.output,loop.df) #bind to a cumulative list dataframe
+}
+loop.output.chrom <- loop.output %>% mutate(chromosome = gsub("^(CM\\d+).*", "\\1", locus),
+                                            position   = as.numeric(gsub(".*_(\\d+)\\.\\d+$", "\\1", locus))) %>% 
+                                     mutate(chrom_num = 
+                                                case_when(chromosome  %in% 'CM084264' ~1, 
+                                                chromosome  %in% 'CM084265' ~2,
+                                                chromosome  %in% 'CM084266' ~3,
+                                                chromosome  %in% 'CM084267' ~4,
+                                                chromosome  %in% 'CM084268' ~5,
+                                                chromosome  %in% 'CM084269' ~6,
+                                                chromosome  %in% 'CM084270' ~7,
+                                                chromosome  %in% 'CM084271' ~8,
+                                                chromosome  %in% 'CM084272' ~9,
+                                                chromosome  %in% 'CM084273' ~10,
+                                                chromosome  %in% 'CM084274' ~11,
+                                                chromosome  %in% 'CM084275' ~12,
+                                                chromosome  %in% 'CM084276' ~13,
+                                                chromosome  %in% 'CM084277' ~14,
+                                                chromosome  %in% 'CM084278' ~15,
+                                                chromosome  %in% 'CM084279' ~16))
+
+Rmisc::summarySE(loop.output.chrom, measurevar = 'perc_allele_0') # allele 0  = 64.26114	+- 0.5005364 % of indivs
+Rmisc::summarySE(loop.output, measurevar = 'perc_allele_1') # allele 1  = 34.98679	+- 0.4819276 % of indivs
+Rmisc::summarySE(loop.output, measurevar = 'perc_allele_2') # allele 2  = 0.7510906	+- 0.08282846 % of indivs
+
+
+# group by chromosomenumber - might not be useful.. 
+Rmisc::summarySE(loop.output.chrom, measurevar = 'perc_allele_0', groupvars = 'chrom_num') # allele 0
+
+```
 
 ```{r prepare pop and strata for genind}
 # now we have the following, the GenoM without metadata (matrix) and Df.meta with metadata (dataframe)

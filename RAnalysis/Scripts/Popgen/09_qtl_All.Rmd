@@ -259,8 +259,7 @@ summary(m1) # summary stats
 car::Anova(m1) # Kenward-Roger-corrected - I think this is ideal for us
 ```
 
-* **Loop lmeqtl locus by locus**
-
+## **Loop lmeqtl locus by locus**
   - *Caution*: this takes a veerry long time, upwards of 24-36 hours
   - If already run and output, *skip this chunk and read the previous output*
   
@@ -360,12 +359,151 @@ for (i in 6:ncol(All_master_reordered_rm)) {
 } # end of for loop
 
 # check out the output!
-length(unique(lme4qtl.output$locus)) # 1768
+length(unique(lme4qtl.output$locus)) # 1600 - about 60%, what about the other SNPs? why did they not run? check in the next chunk
 View(lme4qtl.output)
 # save output 
-write.csv(lme4qtl.output, "RAnalysis/Output/Popgen/qtl/LowvMod_QTL_raw.csv")
+write.csv(lme4qtl.output, "RAnalysis/Output/Popgen/qtl/All_QTL_raw.csv")
 ```
 
+
+**Important** If you already ran the chunk above to output All_QTL_raw.csv, **read it in below instead of rerunning!**
+
+## **Loop lmeqtl locus by locus for THOSE THAT DID NOT RUN!**
+
+* gather new dataframe from 'All_master_reordered_rm' with just the SNPs that are not in 'lme4qtl.output'
+
+* test lme4qtl with probit to see whta the deal is all about 
+  - below we see that there are occurances of loci with 0,1 and 2 causing an error with binomial probit function 
+  - under biallelic assumption, combinte the alternate allelic, be them heterozygous, 1, or homozygous, 2, is approporate
+
+* run the loop above with a couple important changes
+  - input being *only* the snps that failed in the previous (sue to non biallelic loci)
+  - column by column in the for loop, edit the loci converting '2' to '1', merging alternate alleles
+  - then run! 
+  
+  
+```{r lme4qtl run with nerged alt SNPs}
+
+# read in 
+lme4qtl.output <- read.csv("RAnalysis/Output/Popgen/qtl/All_QTL_raw.csv")
+
+# gather new dataframe from 'All_master_reordered_rm' with just the SNPs that are not in 'lme4qtl.output'
+
+All_master_altalleles <- All_master_reordered_rm %>% dplyr::select(!unique(lme4qtl.output$locus))
+
+
+# test lme4qtl with probit to see whta the deal is all about 
+# why did these loci fail in this model?
+lme4qtl::relmatGlmer(All_master_altalleles[,6] ~ # col 6 is the first column with a locus
+                     gen * treatment +# treatment ID, both between subjsect, no slope needed
+                     (1|id), # random factor id
+                     All_master_altalleles, # data
+                     relmat=list(id = All_cov_rm_rc), # covariance matrix (id relatedness)
+                     family = binomial(link = "probit") # for binary SNP allele dat 
+                                  )
+# Error: Error in eval(family$initialize, rho) : y values must be 0 <= y <= 1
+unique(All_master_altalleles[,6]) # theres a 2 inthere! thats why!
+# 0 typically represents a homozygous reference genotype (0/0)
+# 1 usually indicates a heterozygous genotype (0/1 or 1/0)
+# 2 generally denotes a homozygous alternate genotype (1/1)
+
+# Note there are several assumptions and one shold adress the question at hand 
+# in a given study before proceesing 
+# to group genotypes
+
+# Biallelic assumption - QTL analysis assumes a bialleleic model 
+# where only two alleic states are possible at a given locus, in this case combineing these may be appropriate 
+# combining genotypes can also improve power to detect weak WTLs and narrow suppor for QTL regions
+
+
+
+# Loop again with the new input, also merge the alternate alleles! 
+
+# Call the cumulative dataframe that we will write to in the for loop below
+lme4qtl.mergedalleles.output <- data.frame() # start dataframe 
+lme4qtl.loop   <- data.frame(matrix(nrow = 3, ncol = 6)) # create dataframe to save cumunalitively during for loop
+colnames(lme4qtl.mergedalleles.loop) <- c('stat',
+                         'locus', 
+                         'effect',
+                         'df',
+                         'Fvalue',
+                         'pvalue') # names for comuns in the for loop
+
+# now with in information known,  run lme4qtl for each locus
+for (i in 6:ncol(All_master_altalleles)) {
+  
+  # all (or most) loci in this dataframe not biallelic, containing 0,1, and 2
+  All_master_altalleles <- All_master_altalleles %>% mutate(targetlocus = case_when(.[[i]] == 2 ~ 1, TRUE ~ .[[i]]))
+
+  
+  diagnostics <- All_master_altalleles %>% 
+                select(gen_treatment, targetlocus) %>% 
+                group_by(gen_treatment) %>% #%>% 
+                #summarise(total_sum = sum(i))
+                dplyr::summarise(
+                    n = n(),
+                    sum_zeros = sum(
+                       (dplyr::pick(.[[2]]) == 0)), # Count rows where value is 0
+                    sum_ones = sum(
+                       (dplyr::pick(.[[2]])  == 1))   # Count rows where value is 1
+                  )
+    
+    if (any(diagnostics$sum_zeros == 0) | any(diagnostics$sum_ones == 0)) {
+    } # nada, meaning that one of the group variables contained all 0 or all 1, lme4qtl wont run
+    else { # diagnostics passed, run lme4qtl!
+          
+          # run qtl
+          lme4qtl.run <- lme4qtl::relmatGlmer(All_master_altalleles$targetlocus ~
+                                          #All_master_reordered_rm[,i] ~ # SNP DV (must be 0 or 1)
+                                          gen * treatment +# treatment ID, both between subjsect, no slope needed
+                                          (1|id), # random factor id
+                                          All_master_altalleles, # data
+                                          relmat=list(id = All_cov_rm_rc), # covariance matrix (id relatedness)
+                                          family = binomial(link = "probit") # for binary SNP allele dat 
+                                  )
+          # get anova stats for the model
+          #mod.loop <- car::Anova(lme4qtl.run) # Kenward-Roger-corrected
+          mod.loop <- anova(lme4qtl.run)
+          # write out to 
+          lme4qtl.loop$stat[c(1:3)]       <- "lme4QTL, binomial probit"
+          lme4qtl.loop$locus[c(1:3)]      <- colnames(All_master_altalleles[i])
+          # gen
+          lme4qtl.loop$effect[1]          <- "generation"
+          lme4qtl.loop$df[1]              <- mod.loop$npar[1]
+          lme4qtl.loop$Fvalue[1]          <- mod.loop$`F value`[1] # gen 
+          lme4qtl.loop$pvalue[1]          <- stats::pf(mod.loop$`F value`[1], 
+                                                        mod.loop$npar[1], 
+                                                        271, 
+                                                        lower.tail = FALSE)          
+          # treatment
+          lme4qtl.loop$effect[2]          <- "treatment"
+          lme4qtl.loop$df[2]              <- mod.loop$npar[2]
+          lme4qtl.loop$Fvalue[2]          <- mod.loop$`F value`[2] # gen 
+          lme4qtl.loop$pvalue[2]          <- stats::pf(mod.loop$`F value`[2], 
+                                                        mod.loop$npar[2], 
+                                                        271, 
+                                                        lower.tail = FALSE)          
+          # gen * treatment
+          lme4qtl.loop$effect[3]          <- "generation * treatment"
+          lme4qtl.loop$df[3]              <- mod.loop$npar[3]
+          lme4qtl.loop$Fvalue[3]          <- mod.loop$`F value`[3] # gen 
+          lme4qtl.loop$pvalue[3]          <- stats::pf(mod.loop$`F value`[3], 
+                                                        mod.loop$npar[3], 
+                                                        271, 
+                                                        lower.tail = FALSE)
+          # cumulative output table
+          lme4qtl.mergedalleles.output <- rbind(lme4qtl.mergedalleles.output,lme4qtl.loop) #bind to a cumulative list dataframe
+          # print to keep track of it
+          # print(lme4qtl.loop) # print to monitor progress - tag out to quicken loop 
+    } # end of First if else loop, run lme4qtl
+} # end of for loop
+
+# check out the output!
+length(unique(lme4qtl.mergedalleles.output$locus)) # 1600 - about 60%, what about the other SNPs? why did they not run? check in the next chunk
+View(lme4qtl.mergedalleles.output)
+# save output 
+# write.csv(lme4qtl.output, "RAnalysis/Output/Popgen/qtl/All_QTL_raw.csv")
+```
 
 * **Read qtl_raw and correct for multiple tests**
 
@@ -373,7 +511,7 @@ write.csv(lme4qtl.output, "RAnalysis/Output/Popgen/qtl/LowvMod_QTL_raw.csv")
   
 ```{r Edit  raw output QTL: Correct for multiple tests}
 
-raw_qtl.df <- read.csv("RAnalysis/Output/Popgen/qtl/LowvMod_QTL_raw.csv", sep = ",", head = T) %>% select(!X)
+raw_qtl.df <- read.csv("RAnalysis/Output/Popgen/qtl/All_QTL_raw.csv", sep = ",", head = T) %>% select(!X)
 raw_qtl.df <- raw_qtl.df %>% distinct() %>%  # omit duplicates, oopsy, added to cumulative file twice..
                              mutate(chromosome = gsub("^(CM\\d+).*", "\\1", locus),
                                     position   = as.numeric(gsub(".*_(\\d+)\\.\\d+$", "\\1", locus))) %>% 
@@ -394,7 +532,7 @@ raw_qtl.df <- raw_qtl.df %>% distinct() %>%  # omit duplicates, oopsy, added to 
                                                 chromosome  %in% 'CM084277' ~14,
                                                 chromosome  %in% 'CM084278' ~15,
                                                 chromosome  %in% 'CM084279' ~16))
-length(unique(raw_qtl.df$locus)) # 1768
+length(unique(raw_qtl.df$locus)) # 1600
 
 # :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 # Bonferronni correction 
@@ -446,14 +584,14 @@ Bonferroni_qtl.df <- raw_qtl.df.sorted %>%
 
 
 # save output 
-write.csv(Bonferroni_qtl.df, "RAnalysis/Output/Popgen/qtl/LowvMod_QTL_bonferroni.csv")
+write.csv(Bonferroni_qtl.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni.csv")
 
 ```
 
 
 ```{r}
 # laod bonferroni adjusted lme4qtl output
-Bonferroni_qtl.df     <- read.csv("RAnalysis/Output/Popgen/qtl/LowvMod_QTL_bonferroni.csv", sep = ",", head = T) %>% select(!X)
+Bonferroni_qtl.df     <- read.csv("RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni.csv", sep = ",", head = T) %>% select(!X)
 
 # truncate the data to only significant effects
 significant_loci.df   <- Bonferroni_qtl.df %>% dplyr::filter(sig_boolean %in% 'TRUE')
@@ -468,7 +606,7 @@ significant_loci.df   <- Bonferroni_qtl.df %>% dplyr::filter(sig_boolean %in% 'T
 
 # (1) Complex: generation x treatment interactions
 loci_complex.df    <- significant_loci.df %>% dplyr::filter(effect %in% 'generation * treatment')
-nrow(loci_complex.df) # 6
+nrow(loci_complex.df) # 7
 
 
 
@@ -482,19 +620,19 @@ loci_generation.df  <- significant_loci.df %>% dplyr::filter(effect %in% 'genera
 # now we can truncate for both the interaction and treamtent effects 
 loci_captivity.df  <- significant_loci.df %>% filter(!(locus %in% loci_complex.df$locus | # gen * treatment, remove all loci
                                                           locus %in% loci_treatment.df$locus)) # treament, remove all loci
-nrow(loci_captivity.df) # 25
+nrow(loci_captivity.df) # 31
 
 
 
 # (3) Bottleneck effect: treatment only suggest that the inital F1 exposure truncated the population inthese inheritable loci
 loci_bottleneck.df <- significant_loci.df %>% filter(!(locus %in% loci_complex.df$locus | # gen * treatment, remove all loci
                                                           locus %in% loci_generation.df$locus)) # gen only, remove all loci
-# 10
+# 16
 
 # save output 
-write.csv(loci_complex.df, "RAnalysis/Output/Popgen/qtl/LowvMod_QTL_bonferroni_genXtreatment.csv")
-write.csv(loci_captivity.df, "RAnalysis/Output/Popgen/qtl/LowvMod_QTL_bonferroni_gen_only.csv")
-write.csv(loci_bottleneck.df, "RAnalysis/Output/Popgen/qtl/LowvMod_QTL_bonferroni_treatment_only.csv")
+write.csv(loci_complex.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni_genXtreatment.csv")
+write.csv(loci_captivity.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni_gen_only.csv")
+write.csv(loci_bottleneck.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni_treatment_only.csv")
 
 ```
 
