@@ -499,10 +499,11 @@ for (i in 6:ncol(All_master_altalleles)) {
 } # end of for loop
 
 # check out the output!
-length(unique(lme4qtl.mergedalleles.output$locus)) # 1600 - about 60%, what about the other SNPs? why did they not run? check in the next chunk
-View(lme4qtl.mergedalleles.output)
+length(unique(lme4qtl.mergedalleles.output$locus)) # 1057 - about 60%, what about the other SNPs? why did they not run? check in the next chunk
+# View(lme4qtl.mergedalleles.output)
 # save output 
-# write.csv(lme4qtl.output, "RAnalysis/Output/Popgen/qtl/All_QTL_raw.csv")
+lme4qtl.mergedalleles.output <- lme4qtl.mergedalleles.output[,c(7:ncol(lme4qtl.mergedalleles.output))]
+write.csv(lme4qtl.mergedalleles.output, "RAnalysis/Output/Popgen/qtl/All_QTL_raw_merged_altalleles.csv")
 ```
 
 * **Read qtl_raw and correct for multiple tests**
@@ -511,8 +512,12 @@ View(lme4qtl.mergedalleles.output)
   
 ```{r Edit  raw output QTL: Correct for multiple tests}
 
-raw_qtl.df <- read.csv("RAnalysis/Output/Popgen/qtl/All_QTL_raw.csv", sep = ",", head = T) %>% select(!X)
-raw_qtl.df <- raw_qtl.df %>% distinct() %>%  # omit duplicates, oopsy, added to cumulative file twice..
+raw_qtl.df <- read.csv("RAnalysis/Output/Popgen/qtl/All_QTL_raw.csv", sep = ",", head = T) %>% 
+                            select(!X)
+raw_qtl_merged_altalleles.df <- read.csv("RAnalysis/Output/Popgen/qtl/All_QTL_raw_merged_altalleles.csv", sep = ",", head = T) %>% select(!X)
+
+raw_qtl_master.df <- rbind(raw_qtl.df, raw_qtl_merged_altalleles.df) %>% 
+                             distinct() %>%  # omit duplicates, oopsy, added to cumulative file twice..
                              mutate(chromosome = gsub("^(CM\\d+).*", "\\1", locus),
                                     position   = as.numeric(gsub(".*_(\\d+)\\.\\d+$", "\\1", locus))) %>% 
                              mutate(chrom_num = 
@@ -532,7 +537,7 @@ raw_qtl.df <- raw_qtl.df %>% distinct() %>%  # omit duplicates, oopsy, added to 
                                                 chromosome  %in% 'CM084277' ~14,
                                                 chromosome  %in% 'CM084278' ~15,
                                                 chromosome  %in% 'CM084279' ~16))
-length(unique(raw_qtl.df$locus)) # 1600
+length(unique(raw_qtl_master.df$locus)) # 2657
 
 # :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 # Bonferronni correction 
@@ -551,10 +556,10 @@ length(unique(raw_qtl.df$locus)) # 1600
 
 
 # Step 1: Sort values within each category (pvalues low to high in each locus)
-loci_sorted <- raw_qtl.df[order(raw_qtl.df$locus, raw_qtl.df$pvalue),]
+loci_sorted <- raw_qtl_master.df[order(raw_qtl_master.df$locus, raw_qtl_master.df$pvalue),]
 
 # Step 2: Find the minimum value for each category (now call the mlowest p values in each locus)
-loci_min <- aggregate(pvalue ~ locus, data = raw_qtl.df, FUN = min)
+loci_min <- aggregate(pvalue ~ locus, data = raw_qtl_master.df, FUN = min)
 
 # Step 3: Order categories based on their minimum values (order the locus from low to high, this is the order for our final df)
 # make adataframe adding the column 'rank' from 1 to length loci_order and rename loci_order to locus to merge in the next step
@@ -606,7 +611,7 @@ significant_loci.df   <- Bonferroni_qtl.df %>% dplyr::filter(sig_boolean %in% 'T
 
 # (1) Complex: generation x treatment interactions
 loci_complex.df    <- significant_loci.df %>% dplyr::filter(effect %in% 'generation * treatment')
-nrow(loci_complex.df) # 7
+nrow(loci_complex.df) # 13 (7 wihtout merging alt alleles in the second run)
 
 
 
@@ -620,14 +625,15 @@ loci_generation.df  <- significant_loci.df %>% dplyr::filter(effect %in% 'genera
 # now we can truncate for both the interaction and treamtent effects 
 loci_captivity.df  <- significant_loci.df %>% filter(!(locus %in% loci_complex.df$locus | # gen * treatment, remove all loci
                                                           locus %in% loci_treatment.df$locus)) # treament, remove all loci
-nrow(loci_captivity.df) # 31
+nrow(loci_captivity.df) # 47 (31 wihtout merging alt alleles in the second run)
 
 
 
 # (3) Bottleneck effect: treatment only suggest that the inital F1 exposure truncated the population inthese inheritable loci
 loci_bottleneck.df <- significant_loci.df %>% filter(!(locus %in% loci_complex.df$locus | # gen * treatment, remove all loci
                                                           locus %in% loci_generation.df$locus)) # gen only, remove all loci
-# 16
+nrow(loci_bottleneck.df)
+# 22 (16 wihtout merging alt alleles in the second run)
 
 # save output 
 write.csv(loci_complex.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni_genXtreatment.csv")
