@@ -560,7 +560,89 @@ All_LOW_MOD.LifeHistData <- dplyr::filter(All.LifeHistData, !grepl("pH7\\.", id)
 
 
 * note: after some trial and error I found that inputting all SNPs results in no data! 
-alternatively, inputing a subset of the first 20-100 SNPs did result in parentage assignment, 
+alternatively, inputing a subset of the first 20-100 SNPs did result in parentage assignment
+
+* what to do next? 
+- optimize the number of input SNPs based on maximum output of assigned pedigrees
+
+## Pedtest
+
+**Objective** Run a function ```Pedtest``` that iterates ```sequoia``` from 1:100 
+outputting the number of unique assigned pedigrees. Create a figure with x = N SNPs and y = assigned pedigree
+theretically if this works we should either see data top out at a number of SNPs or yield a bell-like curve 
+where the peak is the desired input 
+
+  - why a function? We should repeat this test for each pedigree group (ie F0 + F1, F1_low_Broodstock + F12_low_Offpsring, etc.)
+
+```{r Pedtest}
+
+Pedtest <- function(GenoM, LifeHistData, threshold.LLR, min.LLR) { # start of fxn
+  
+  x <- data.frame(seq(10, 100, by=5))# to 100 every 10
+
+  pedtest.raw           <- data.frame(matrix(ncol = 3))
+  colnames(pedtest.raw) <- c('num_SNPs', 'uniq_pedigree', 'mean_LRRpair')
+  
+  pedtest.out           <- data.frame(matrix(ncol = 3)) # create dataframe to save cumunalitively during for loop
+  colnames(pedtest.out) <- c('num_SNPs', 'uniq_pedigree', 'mean_LRRpair') # names for comuns in the for loop
+  
+  # for loop for number of SNPs, repeating sequoia for each
+for (i in 1:nrow(x)) { # start of i for loop
+  
+  num_SNPs      <- x[i,] # the main call here, 1:100 repeating this loop
+  randomSNPs    <- array(sample(c(sample(1:ncol(GenoM), num_SNPs, replace = TRUE)))) # call random n.SNPs from the matrix
+  reduced_GenoM <- GenoM[,randomSNPs] # truncate the GenoM by the i number of randomSNPs
+  
+  run.sequoia <- sequoia(GenoM = reduced_GenoM,
+                               LifeHistData = LifeHistData, 
+                               SeqList = NULL,
+                               Module = "par", # just parent offspring assignment
+                               Err = 0.005, #1e-04,
+                               # threshold for log 10 likelihood (LLR) between a proposed relationship versus unrelated
+                               Tfilter = threshold.LLR, 
+                               # minimum LLR required for acceptance of proposed relationship relative to the next most likely
+                               Tassign = min.LLR,
+                               Complex = "full",
+                               Herm = "A",
+                               UseAge = "yes",
+                               ErrFlavour = "version2.9",
+                               quiet = TRUE,
+                               CalcLLR = TRUE
+                               ) 
+  
+  df.loop       <- data.frame(run.sequoia$PedigreePar %>% select(id, LLRpair) %>% na.omit())
+  uniq_pedigree <- nrow(df.loop)
+  mean_LRRpair <- mean(df.loop$LLRpair)
+  
+  
+  pedigree.raw$num_SNPs      <- num_SNPs
+  pedigree.raw$uniq_pedigree <- uniq_pedigree
+  pedigree.raw$mean_LRRpair  <- mean_LRRpair
+
+  
+  pedtest.out <- rbind(pedtest.out, pedigree.raw) %>% na.omit()
+  
+      } # end of i for loop
+
+  # plot it 
+  
+  xint        <- (pedtest.out %>% filter(mean_LRRpair == max(mean_LRRpair)))$num_SNPs
+  scaleFactor <- max(pedtest.out$uniq_pedigree) / max(pedtest.out$mean_LRRpair)
+  loess.plot  <- ggplot(pedtest.out, aes(x=num_SNPs)) +
+                    geom_smooth(aes(y=uniq_pedigree), method="loess", col="grey60") +
+                    geom_smooth(aes(y=mean_LRRpair * scaleFactor), method="loess", col="grey20") +
+                    scale_y_continuous(name="uniq_pedigree", sec.axis=sec_axis(~./scaleFactor, name="mean_LRRpair")) +
+                    geom_vline(xintercept = xint)
+
+  return(list(output  = pedtest.out,
+              plot    = loess.plot))
+
+} #end of of fxn
+
+```
+
+
+
 below I wrote a for loop that is iterated (bootstrapped) 100 times each time calling 50 random SNPs 
 of the vcf file, this outputs to a cumulative table to truncate parentage assignment by the best log liklihood result (LLR)
 
@@ -982,6 +1064,14 @@ output:
 
 ```{r Pedigree construction: F0BF1O}
 
+
+F0BF1O.Pedtest <- Pedtest(F0BF1O.GenoM_final, F0BF1O.LifeHistData, -2, 0.2)
+
+F0BF1O.Pedtest$out
+F0BF1O.Pedtest$plot
+  
+  
+
 # F0 AND F1 OFFPSRING ALL   ::::::::::::::::::::::::::::::::::::::::::
 F0BF1O.sequoia <- BootPed(
                          F0BF1O.GenoM_final, # GenoM
@@ -1039,6 +1129,12 @@ output:
     <insert here>
   
 ```{r Pedigree construction: F1BF2O LOW}
+
+
+F1BF2O_LOW.Pedtest <- Pedtest(F1BF2O_LOW.GenoM_final, F1BF2O_LOW.LifeHistData, -2, 0.2)
+F1BF2O_LOW.Pedtest$out
+F1BF2O_LOW.Pedtest$plot
+
 
 #::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 # F1 AND F2 OFFPSRING (treatment specific)   
@@ -1131,6 +1227,11 @@ output:
 [1] "Edit the n.SNP or n.bootstrap call for better pedigree"
 
 ```{r Pedigree construction:  F1BF2O MODERATE}
+
+
+F1BF2O_MOD.Pedtest <- Pedtest(F1BF2O_MOD.GenoM_final, F1BF2O_MOD.LifeHistData, -2, 0.2)
+F1BF2O_MOD.Pedtest$out
+F1BF2O_MOD.Pedtest$plot
 
 #::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 # F1 AND F2 OFFPSRING (treatment specific)   

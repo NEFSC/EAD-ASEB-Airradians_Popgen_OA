@@ -1,0 +1,33 @@
+"","locus","chrom_num","position","location","distance_bp","protein_id","start","end"
+"1","CM084264_1_34294397.1",1,34294397,"exon",0,"transmembrane protein 135-like%2C transcript variant X1",34178211,34393039
+"2","CM084264_1_34294397.1",1,34294397,"exon",0,"transmembrane protein 135-like%2C transcript variant X2",34178211,34393039
+"3","CM084264_1_64269859.1",1,64269859,"exon",0,"104 kDa microneme/rhoptry antigen-like",64267434,64281313
+"4","CM084264_1_64874708.1",1,64874708,"exon",0,"organic cation transporter protein-like%2C transcript variant X2",64860155,64919471
+"5","CM084264_1_64874708.1",1,64874708,"exon",0,"organic cation transporter protein-like%2C transcript variant X5",64860155,64919471
+"6","CM084264_1_64874708.1",1,64874708,"exon",0,"organic cation transporter protein-like%2C transcript variant X3",64860155,64919471
+"7","CM084264_1_64874708.1",1,64874708,"exon",0,"organic cation transporter protein-like%2C transcript variant X6",64860155,64919471
+"8","CM084264_1_64874708.1",1,64874708,"exon",0,"organic cation transporter protein-like%2C transcript variant X4",64860600,64919471
+"9","CM084264_1_64874708.1",1,64874708,"exon",0,"organic cation transporter protein-like%2C transcript variant X7",64871426,64919471
+"10","CM084264_1_64874708.1",1,64874708,"exon",0,"organic cation transporter protein-like%2C transcript variant X1",64871985,64919471
+"11","CM084264_1_70466152.1",1,70466152,"exon",0,"arrestin domain-containing protein 2-like%2C transcript variant X3",70452615,70629006
+"12","CM084265_1_785374.1",2,785374,"exon",0,"aquaporin-11-like%2C transcript variant X1",780898,800792
+"13","CM084266_1_57882486.1",3,57882486,"exon",0,"tenascin-X-like",57880778,57882623
+"14","CM084266_1_63167162.1",3,63167162,"exon",0,"papilin-like",63145379,63411447
+"15","CM084266_1_70706235.1",3,70706235,"exon",0,"uncharacterized protein",70535710,70807783
+"16","CM084267_1_5168533.1",4,5168533,"exon",0,"carboxyl-terminal PDZ ligand of neuronal nitric oxide synthase protein-like%2C transcript variant X1",5133138,5326501
+"17","CM084268_1_1326636.1",5,1326636,"exon",0,"fatty acid synthase-like",1293825,1675164
+"18","CM084268_1_1326636.1",5,1326636,"exon",0,"chitotriosidase-1-like%2C transcript variant X1",1318167,1362336
+"19","CM084268_1_1326636.1",5,1326636,"exon",0,"chitotriosidase-1-like%2C transcript variant X2",1324116,1362336
+"20","CM084268_1_49720512.1",5,49720512,"exon",0,"protein FAM13A-like",49676403,49900154
+"21","CM084270_1_26884058.1",7,26884058,"exon",0,"uncharacterized protein",26882783,26892391
+"22","CM084272_1_33617991.1",9,33617991,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X2",33430783,33818548
+"23","CM084272_1_33617991.1",9,33617991,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X7",33431900,33818548
+"24","CM084272_1_33617991.1",9,33617991,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X1",33431900,33818548
+"25","CM084272_1_33617991.1",9,33617991,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X5",33431900,33818548
+"26","CM084272_1_33617991.1",9,33617991,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X4",33431900,33818548
+"27","CM084272_1_33617991.1",9,33617991,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X3",33431900,33818548
+"28","CM084272_1_33617991.1",9,33617991,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X6",33431900,33815782
+"29","CM084276_1_25975836.1",13,25975836,"exon",0,"uncharacterized protein",25974660,25976078
+"30","CM084278_1_19961223.1",15,19961223,"exon",0,"tetratricopeptide repeat protein 38-like",19947922,19990404
+"31","CM084278_1_22654720.1",15,22654720,"exon",0,"nucleolar and coiled-body phosphoprotein 1-like",22605282,22722427
+"32","CM084278_1_22665046.1",15,22665046,"exon",0,"nucleolar and coiled-body phosphoprotein 1-like",22605282,22722427

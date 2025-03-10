@@ -1,0 +1,19 @@
+"","locus","chrom_num","position","location","distance_bp","protein_id","start","end"
+"1","CM084264_1_64874049.1",1,64874049,"exon",0,"organic cation transporter protein-like%2C transcript variant X2",64860155,64919471
+"2","CM084264_1_64874049.1",1,64874049,"exon",0,"organic cation transporter protein-like%2C transcript variant X5",64860155,64919471
+"3","CM084264_1_64874049.1",1,64874049,"exon",0,"organic cation transporter protein-like%2C transcript variant X3",64860155,64919471
+"4","CM084264_1_64874049.1",1,64874049,"exon",0,"organic cation transporter protein-like%2C transcript variant X6",64860155,64919471
+"5","CM084264_1_64874049.1",1,64874049,"exon",0,"organic cation transporter protein-like%2C transcript variant X4",64860600,64919471
+"6","CM084264_1_64874049.1",1,64874049,"exon",0,"organic cation transporter protein-like%2C transcript variant X7",64871426,64919471
+"7","CM084264_1_64874049.1",1,64874049,"exon",0,"organic cation transporter protein-like%2C transcript variant X1",64871985,64919471
+"8","CM084265_1_70607188.1",2,70607188,"exon",0,"perlucin-like protein",70584075,70613213
+"9","CM084266_1_70706208.1",3,70706208,"exon",0,"uncharacterized protein",70535710,70807783
+"10","CM084272_1_33497675.1",9,33497675,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X2",33430783,33818548
+"11","CM084272_1_33497675.1",9,33497675,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X7",33431900,33818548
+"12","CM084272_1_33497675.1",9,33497675,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X1",33431900,33818548
+"13","CM084272_1_33497675.1",9,33497675,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X5",33431900,33818548
+"14","CM084272_1_33497675.1",9,33497675,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X4",33431900,33818548
+"15","CM084272_1_33497675.1",9,33497675,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X3",33431900,33818548
+"16","CM084272_1_33497675.1",9,33497675,"exon",0,"lactose-binding lectin l-2-like%2C transcript variant X6",33431900,33815782
+"17","CM084275_1_39776636.1",12,39776636,"exon",0,"inter-alpha-trypsin inhibitor heavy chain H3-like",39761985,39796593
+"18","CM084276_1_38772835.1",13,38772835,"exon",0,"aminopeptidase N-like",38753629,38847029

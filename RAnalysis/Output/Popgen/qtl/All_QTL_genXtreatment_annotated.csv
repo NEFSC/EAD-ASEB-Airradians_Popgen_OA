@@ -1,0 +1,13 @@
+"","locus","chrom_num","position","location","distance_bp","protein_id","start","end"
+"1","CM084264_1_34294469.1",1,34294469,"exon",0,"transmembrane protein 135-like%2C transcript variant X1",34178211,34393039
+"2","CM084264_1_34294469.1",1,34294469,"exon",0,"transmembrane protein 135-like%2C transcript variant X2",34178211,34393039
+"3","CM084269_1_39737118.1",6,39737118,"exon",0,"ran guanine nucleotide release factor-like",39735214,39751086
+"4","CM084270_1_15641798.1",7,15641798,"exon",0,"uncharacterized protein%2C transcript variant X1",15502108,15796078
+"5","CM084270_1_15641798.1",7,15641798,"exon",0,"uncharacterized protein%2C transcript variant X4",15502108,15796078
+"6","CM084270_1_15641798.1",7,15641798,"exon",0,"uncharacterized protein%2C transcript variant X5",15502220,15796078
+"7","CM084270_1_15641798.1",7,15641798,"exon",0,"uncharacterized protein%2C transcript variant X6",15502220,15796078
+"8","CM084270_1_15641798.1",7,15641798,"exon",0,"uncharacterized protein%2C transcript variant X3",15560465,15813040
+"9","CM084270_1_15641798.1",7,15641798,"exon",0,"uncharacterized protein%2C transcript variant X4",15560482,15813040
+"10","CM084271_1_379032.1",8,379032,"exon",0,"TBC1 domain family member 7-like%2C transcript variant X3",357376,412066
+"11","CM084271_1_379032.1",8,379032,"exon",0,"uncharacterized protein",372424,395892
+"12","CM084273_1_31865208.1",10,31865208,"exon",0,"uncharacterized protein",31858717,31867940

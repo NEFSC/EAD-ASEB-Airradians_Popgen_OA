@@ -151,7 +151,7 @@ F1F2F3_LOW_MOD.GenoM <- as.matrix(F1F2F3_LOW_MOD.gen)
 F1F2F3_LOW_MOD.DF    <- as.data.frame(F1F2F3_LOW_MOD.GenoM) %>% tibble::rownames_to_column(., "id")
 nrow(F1F2F3_LOW_MOD.DF) # 289
 # merge the metadata by 'id' 
-F1F2F3_LOW_MOD.DF.meta <- cbind(F1F2F3_LOW_MOD.metadata F1F2F3_LOW_MOD.DF, by = 'id')
+F1F2F3_LOW_MOD.DF.meta <- cbind(F1F2F3_LOW_MOD.metadata,F1F2F3_LOW_MOD.DF, by = 'id')
 nrow(F1F2F3_LOW_MOD.DF.meta) # 289 - did not loose data, good to go! 
 
 
@@ -1036,7 +1036,7 @@ ggsave(
 ```
 
 
-```{r  DAPC plot: Low v Mod}
+```{r  DAPC plot: All}
 
 # Create a data.frame containing individual coordinates
 ind_coords = as.data.frame(dapc1.All$ind.coord)
