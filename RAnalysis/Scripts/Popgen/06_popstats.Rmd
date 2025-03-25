@@ -1,0 +1,1561 @@
+---
+title: "06_popstats"
+author: "Samuel Gurr"
+---
+
+## Objective: 
+
+* the goal of this script it to compute Fst, Ho, etc between our treatment groups (generations and OA condition) using the R packages ```adagenet``` and ```heirfstat```. TO this end, the final vcf finals must be subset to the desired matrices to build a geneind object. Further, we must subset out master metadat for the indi indivuals present in the matrix before running 
+
+* steps: 
+  
+  (1) subset master vcf file (with all individuals) to those desired for each test
+  
+  (2) build geneind object from the matrices in #1
+  
+  (3) subset the metadata (complete several checks - **note** none alter our vcf file because we complete these with plink)
+  
+  (4) run basic stats (Fis, Het, Fst)
+  
+  (5) build a function to execute all the above parsed by chromosome 
+  
+  (6) Use OutFLANK to detect outlier loci (via FST) that may be due to spatially heterogeneous selection
+   - cite OutFLANK: Whitlock, M. C., and K. E. Lotterhos. Reliable detection of loci responsible for local adaptation: Inference of a neutral model through trimming the distribution of FST. Accepted at The American Naturalist.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# SET WORKING DIRECTORY 
+#knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+```
+
+## load libraries
+
+```{r, include=FALSE}
+library(tidyverse)
+library(vcfR)
+library(adegenet)
+library(hierfstat)
+library(poppr)
+library(reshape2)
+library(ggplot2)
+library(RColorBrewer)
+library(scales)
+library(OutFLANK) #if (!("OutFLANK" %in% installed.packages())){install_github("whitlock/OutFLANK")}
+
+```
+
+## load vcf files
+
+*   master 'All' vcf file, meaning all individuals sequenced for the experiment
+
+```{r load master vcf file}
+All.vcf <- vcfR::read.vcfR(here::here(getwd(),
+                            "RAnalysis", 
+                            "Data", 
+                            "Popgen", 
+                            "03_prune", 
+                            "out.7.phased.vcf.gz"), verbose = FALSE)
+```
+
+## Subset the vcf file: individuals / treatments
+
+  - subset the vct to target *all individuals from F1-F3 from low and moderate OA* as 'F1F2F3_LOW_MOD.vcf'
+
+  - **important** F0-12, F0-19, and F0-23 were sequenced but did not contribute to F1 offspring, omit
+  F0-12 is column 4
+  F0-19 is column 11
+  F0-23 is column 16
+  
+```{r subset vcf file}
+
+# F1 thorugh F3 low and moderate only!
+F1F2F3_LOW_MOD.vcf <- All.vcf[,c(1,27:139, 
+                              153:177, 198:250, 
+                              295:392)] 
+
+# colnames(F1F2F3_LOW_MOD.vcf@gt[,2:length(colnames(F1F2F3_LOW_MOD.vcf@gt))]) # check it
+
+F1F2F3_All.vcf <- All.vcf[,c(1,27:392)] 
+
+```
+
+## Strata metadata based on the individual IDs
+
+* build the strata
+* subset for the vcf matrices (if needed)
+
+```{r strata metadata}
+
+# list ids for all individuals int he vcf file
+All.ListIDs  <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+
+# master metadata
+All.metadata <- as.data.frame(matrix(ncol = 1,
+                                     nrow = length(All.ListIDs))) %>% 
+                          mutate(id = All.ListIDs,
+                                 type = dplyr::case_when(grepl("-B", id) ~ "broodstock", TRUE ~ 'juvenile'),
+                                 gen = dplyr::case_when(grepl("F0", id) ~ "F0",
+                                                             grepl("F1", id) ~ "F1",
+                                                             grepl("F2", id) ~ "F2",
+                                                             grepl("F3", id) ~ "F3",
+                                                             TRUE ~ "F1"),
+                                 treatment = dplyr::case_when(
+                                        grepl("F0", id) ~ "none",
+                                        grepl("pH7\\.",id) ~ "High",
+                                        grepl(c("pH75\\.|.201.|.203.|.204.|.251.|.253.|.254.|.301.|.303.|.304.|.351.|.352.|.353.|.354."), id) ~
+                                        "Moderate",
+                                        grepl(c("pH8|.101.|.103.|.104.|.153.|.154.|.155.|.3.|.4.|.5."), id) ~ 
+                                        "Low")) %>% 
+                                dplyr::mutate(gen_treatment = 
+                                                dplyr::case_when(gen == "F0" ~ "F0",
+                                                                 gen %in% c("F1","F2","F3") ~ paste0(gen,'_',treatment))) %>% 
+                                select(-V1) 
+
+# subset for the vcf matrices, we already have it for 'All'
+F1F2F3_LOW_MOD.metadata <- All.metadata %>% dplyr::filter(id %in%
+                                                            colnames(F1F2F3_LOW_MOD.vcf@gt[,2:length(colnames(F1F2F3_LOW_MOD.vcf@gt))]))
+
+F1F2F3_All.metadata     <- All.metadata %>% dplyr::filter(id %in%
+                                                            colnames(F1F2F3_All.vcf@gt[,2:length(colnames(F1F2F3_All.vcf@gt))]))
+```
+
+
+### Merge metadata with the raw snp 
+
+Why? we want the metadata to be recognized as the strate /pop when making the genind object - meaning these data need to be the exact order at which the rows appear in the vcf file. To ensure ths goes smoothly, simply add these data to the matrix merging by 'id'
+
+  * convert snp matrix to dataframe and merge metadata
+
+  * convert the dataframe with only snp genotypes back to a matrix without metadata
+  
+```{r merge snp metadata to prep geneind}
+
+# All (F0  F3 all treatments)
+# first build a preliminary genind, we can movert this to a matrix
+All.gen   <- All.vcf %>% vcfR::vcfR2genind() 
+# convert matrix to a dataframe and move the rownames to the first column as 'id'
+All.GenoM <- as.matrix(All.gen)
+All.DF    <- as.data.frame(All.GenoM) %>% tibble::rownames_to_column(., "id")
+nrow(All.DF) # 391
+# merge the metadata by 'id' 
+All.DF.meta <- merge(All.metadata,All.DF, by = 'id')
+nrow(All.DF.meta) # 391 - did not loose data, good to go! 
+
+
+# Low v Mod 
+# first build a preliminary genind, we can movert this to a matrix
+F1F2F3_LOW_MOD.gen   <- F1F2F3_LOW_MOD.vcf %>% vcfR::vcfR2genind() 
+# convert matrix to a dataframe and move the rownames to the first column as 'id'
+F1F2F3_LOW_MOD.GenoM <- as.matrix(F1F2F3_LOW_MOD.gen)
+F1F2F3_LOW_MOD.DF    <- as.data.frame(F1F2F3_LOW_MOD.GenoM) %>% tibble::rownames_to_column(., "id")
+nrow(F1F2F3_LOW_MOD.DF) # 289
+# merge the metadata by 'id' 
+F1F2F3_LOW_MOD.DF.meta <- cbind(F1F2F3_LOW_MOD.metadata,F1F2F3_LOW_MOD.DF, by = 'id')
+nrow(F1F2F3_LOW_MOD.DF.meta) # 289 - did not loose data, good to go! 
+
+
+# F1 F2 F3 all
+# first build a preliminary genind, we can movert this to a matrix
+F1F2F3_All.gen   <- F1F2F3_All.vcf %>% vcfR::vcfR2genind() 
+# convert matrix to a dataframe and move the rownames to the first column as 'id'
+F1F2F3_All.GenoM <- as.matrix(F1F2F3_All.gen)
+F1F2F3_All.DF    <- as.data.frame(F1F2F3_All.GenoM) %>% tibble::rownames_to_column(., "id")
+nrow(F1F2F3_All.DF) # 366
+# merge the metadata by 'id' 
+F1F2F3_All.DF.meta <- cbind(F1F2F3_All.DF, F1F2F3_All.metadata, by = 'id')
+nrow(F1F2F3_All.DF.meta) # 366 - did not loose data, good to go! 
+
+```
+
+### Summarize the loci genotypes (with the All.<data> only)
+
+  - 0 = homozygeous reference
+  - 1 = heterzygous alternate
+  - 2 = homozygous alternate 
+
+* input: 
+  - All.DF.meta
+  
+* objective: 
+  - output the total number and percent of individuals with 0, 1, and 2 at each locus - summarise mean SE 
+  - group statistics in the bullet above by generation and treatment  
+
+```{r}
+All.DF.meta <- All.DF.meta %>%  dplyr::select(!matches("\\.0$")) # only call SNPs <id>.1
+loop.output <- data.frame() # start dataframe 
+loop.df     <- data.frame(matrix(nrow = 1, ncol = 7)) # create dataframe to save cumunalitively during for loop
+colnames(loop.df) <- c('locus', 
+                       'n_allele_0',
+                       'perc_allele_0',
+                       'n_allele_1',
+                       'perc_allele_1',
+                       'n_allele_2',
+                       'perc_allele_2') # names for columns in the for loop
+
+for (i in 6:ncol(All.DF.meta)) { # first 6 columns are metadata
+  num_indivs <- nrow(All.DF.meta)
+  
+  loop.df$locus         <- colnames(All.DF.meta[i])
+  loop.df$n_allele_0    <- nrow(All.DF.meta %>% filter(.[[i]] %in% 0))
+  loop.df$perc_allele_0 <- signif((loop.df$n_allele_0 / num_indivs)*100, digits = 3)
+  
+  loop.df$n_allele_1    <- nrow(All.DF.meta %>% filter(.[[i]] %in% 1))
+  loop.df$perc_allele_1 <- signif((loop.df$n_allele_1 / num_indivs)*100, digits = 3)
+  
+  loop.df$n_allele_2    <- nrow(All.DF.meta %>% filter(.[[i]] %in% 2))
+  loop.df$perc_allele_2 <- signif((loop.df$n_allele_2 / num_indivs)*100, digits = 3)
+  
+  # cumulative output 
+  loop.output <- rbind(loop.output,loop.df) #bind to a cumulative list dataframe
+}
+loop.output.chrom <- loop.output %>% mutate(chromosome = gsub("^(CM\\d+).*", "\\1", locus),
+                                            position   = as.numeric(gsub(".*_(\\d+)\\.\\d+$", "\\1", locus))) %>% 
+                                     mutate(chrom_num = 
+                                                case_when(chromosome  %in% 'CM084264' ~1, 
+                                                chromosome  %in% 'CM084265' ~2,
+                                                chromosome  %in% 'CM084266' ~3,
+                                                chromosome  %in% 'CM084267' ~4,
+                                                chromosome  %in% 'CM084268' ~5,
+                                                chromosome  %in% 'CM084269' ~6,
+                                                chromosome  %in% 'CM084270' ~7,
+                                                chromosome  %in% 'CM084271' ~8,
+                                                chromosome  %in% 'CM084272' ~9,
+                                                chromosome  %in% 'CM084273' ~10,
+                                                chromosome  %in% 'CM084274' ~11,
+                                                chromosome  %in% 'CM084275' ~12,
+                                                chromosome  %in% 'CM084276' ~13,
+                                                chromosome  %in% 'CM084277' ~14,
+                                                chromosome  %in% 'CM084278' ~15,
+                                                chromosome  %in% 'CM084279' ~16))
+
+Rmisc::summarySE(loop.output.chrom, measurevar = 'perc_allele_0') # allele 0  = 64.26114	+- 0.5005364 % of indivs
+Rmisc::summarySE(loop.output, measurevar = 'perc_allele_1') # allele 1  = 34.98679	+- 0.4819276 % of indivs
+Rmisc::summarySE(loop.output, measurevar = 'perc_allele_2') # allele 2  = 0.7510906	+- 0.08282846 % of indivs
+
+
+# group by chromosomenumber - might not be useful.. 
+Rmisc::summarySE(loop.output.chrom, measurevar = 'perc_allele_0', groupvars = 'chrom_num') # allele 0
+
+```
+
+```{r prepare pop and strata for genind}
+# now we have the following, the GenoM without metadata (matrix) and Df.meta with metadata (dataframe)
+# the matrix is what is is submitted to create a genind object, but we also need to call 'ind' and 'pop'
+# for this data we will call the columns in Df.meta below 
+
+# Low v MOD
+ind.LOW_MOD        = as.character(F1F2F3_LOW_MOD.DF.meta$id) # individual ID
+gen_pCO2.LOW_MOD   = as.character(F1F2F3_LOW_MOD.DF.meta$gen_treatment) # our metadata to calc pairwise fst
+strata_df.LOW_MOD  = data.frame(ID = ind.LOW_MOD, Population = gen_pCO2.LOW_MOD) # vcf2genind requires a strata dataframe with id and population
+
+# All
+ind.All        = as.character(F1F2F3_All.DF.meta$id) # individual ID
+gen_pCO2.All   = as.character(F1F2F3_All.DF.meta$gen_treatment) # our metadata to calc pairwise fst
+strata_df.All  = data.frame(ID = ind.All, Population = gen_pCO2.All) # vcf2genind requires a strata dataframe with id and population
+```
+
+
+```{r create genind with vcf2genind}
+# ?adagenet::df2genind
+# ?poppr::popsub
+# ?vcfR2genind # acts as a wrapper for df2genind, note that df2genind did not like my allele names
+# gave an error that . was not the separator between locus and allele, however vcfRgenind worked fine.
+
+# create the gen ind object 
+# feed the column population (as gen_treatment here) and the datafraframe strata_df as the strata metadata
+
+# Low v Mod
+LowvMod_gen <- vcfR::vcfR2genind(F1F2F3_LOW_MOD.vcf, sep = "[|/]", pop = strata_df.LOW_MOD$Population, strata = strata_df.LOW_MOD)
+LowvMod_gen # 289 individuals; 2,947 loci; 5,894 alleles
+popNames(LowvMod_gen) # "F1_Low"      "F1_Moderate" "F2_Low"      "F2_Moderate" "F3_Low"      "F3_Moderate"
+
+# All
+All_gen <- vcfR::vcfR2genind(F1F2F3_All.vcf, sep = "[|/]", pop = strata_df.All$Population, strata = strata_df.All)
+All_gen # 366 individuals; 2,947 loci; 5,894 alleles
+popNames(All_gen) # "F1_Low"      "F1_Moderate" "F2_High"     "F2_Low"      "F2_Moderate" "F3_High"     "F3_Low"      "F3_Moderate"
+```
+
+
+### Missing data: loci 
+
+* calculate the percentage of complete genptypes per loci in the SNP data set
+
+* **Conclusion:** named numeric(0), nothing < 80% - we already filtered on SEDNA using plink! 100% complete genotypes
+
+```{r missing loci}
+
+# Low v Mod
+locmiss = propTyped(LowvMod_gen, by = "loc")
+locmiss[which(locmiss < 0.80)] # print loci with < 80% complete genotypes ## named numeric(0)
+barplot(locmiss, ylim = c(0,1), ylab = "Complete genotypes (proportion)", xlab = "Locus", las = 2, cex.names = 0.7) # Barplot
+missingno(LowvMod_gen, type = "loci", cutoff = 0.20) # remove the loci with > 20% missing data
+#  No missing values detected.
+
+
+# All
+locmiss = propTyped(All_gen, by = "loc")
+locmiss[which(locmiss < 0.80)] # print loci with < 80% complete genotypes ## named numeric(0)
+barplot(locmiss, ylim = c(0,1), ylab = "Complete genotypes (proportion)", xlab = "Locus", las = 2, cex.names = 0.7) # Barplot
+missingno(All_gen, type = "loci", cutoff = 0.20) # remove the loci with > 20% missing data
+#  No missing values detected.
+```
+
+
+## Missing data: individuals
+
+* Calculate the percentage of complete genotypes per individual in the lobster SNP data set.
+
+* **Conclusion:** amed numeric(0), nothing < 80% - we already filtered on SEDNA using plink! 100% complete genotypes
+
+```{r missing ind}
+
+# Low v Mod
+indmiss = propTyped(LowvMod_gen, by = "ind")
+indmiss[ which(indmiss < 0.80) ] # print individuals with < 80% complete genotypes
+missingno(LowvMod_gen, type = "geno", cutoff = 0.20) # remove the individuals with > 20% missing genotypes
+# No missing values detected.
+
+
+# All
+indmiss = propTyped(All_gen, by = "ind")
+indmiss[ which(indmiss < 0.80) ] # print individuals with < 80% complete genotypes
+missingno(All_gen, type = "geno", cutoff = 0.20) # remove the individuals with > 20% missing genotypes
+# No missing values detected.
+```
+
+
+### Check: unique genotypes
+
+* onmit duplicates if necessary
+
+* Check loci are still polymorphic after filtering (optional if there was no filtering in this script)
+
+```{r check unique}
+
+# Low v Mod
+# Print the number of multilocus genotypes
+mlg(LowvMod_gen)
+#############################
+# Number of Individuals:  289 
+# Number of MLG:  289 
+#############################
+# [1] 289
+isPoly(LowvMod_gen) %>% summary # all true, no need to remove loci that are not polymorphic
+#    Mode    TRUE 
+# logical    2947 
+# if an occurrence of FALSE you woud beed to run the following to truncante those that are TRUE
+# poly_loci = names(which(isPoly(LowvMod_gen) == TRUE))
+# LowvMod_gen = LowvMod_gen[loc = poly_loci]
+# isPoly(LowvMod_gen) %>% summary
+
+
+# All
+# Print the number of multilocus genotypes
+mlg(All_gen)
+#############################
+# Number of Individuals:  366 
+# Number of MLG:  366 
+#############################
+# [1] 366
+isPoly(All_gen) %>% summary # all true, no need to remove loci that are not polymorphic
+#    Mode    TRUE 
+# logical    2947
+```
+
+
+## Summary statistics of final genind
+
+* **note** we did not need to conduct extra filtering (missingess, unique genotypes, non polymorphic loci etc.) so this the same as the original genind computed several chunks above
+
+* important sanity check before proceeding
+
+```{r print basic information}
+
+# Low v Mod
+LowvMod_gen # basic information 
+# Print the number of alleles per locus
+table(LowvMod_gen$loc.fac) # 2 for all loci, note we did not find any non polymorphic oci in previous check! 
+# Print the sample size for each site
+summary(LowvMod_gen$pop) # important information for the paper 
+     # F1_Low F1_Moderate      F2_Low F2_Moderate      F3_Low F3_Moderate 
+     #     58          55          32          46          49          49
+
+
+
+# All
+All_gen # basic information 
+# Print the number of alleles per locus
+table(All_gen$loc.fac) # 2 for all loci, note we did not find any non polymorphic oci in previous check! 
+# Print the sample size for each site
+summary(All_gen$pop) # important information for the paper 
+     # F1_Low F1_Moderate     F2_High      F2_Low F2_Moderate     F3_High      F3_Low F3_Moderate 
+     #     58          55          33          32          46          44          49          49 
+```
+
+
+
+###  Mean allelic richness per site across all loci
+
+* The population with higher allelic richness has more genetic variants, indicating greater genetic diversity
+```{r alleic richness}
+
+# Low v Mod
+as.data.frame(allelic.richness(genind2hierfstat(LowvMod_gen))$Ar %>% # Print mean allelic richness per site across all loci
+  apply(MARGIN = 2, FUN = mean) %>% 
+  round(digits = 3)
+) %>% dplyr::rename(allelicrichness = names(.)[1])
+# F1_Low	    1.982			
+# F1_Moderate	1.987			
+# F2_Low	    1.989	* HIGHEST			
+# F2_Moderate	1.989	* HIGHEST			
+# F3_Low	    1.983			
+# F3_Moderate	1.989	* HIGHEST
+
+
+# All
+as.data.frame(allelic.richness(genind2hierfstat(All_gen))$Ar %>% # Print mean allelic richness per site across all loci
+  apply(MARGIN = 2, FUN = mean) %>% 
+  round(digits = 3)
+) %>% dplyr::rename(allelicrichness = names(.)[1])
+# F1_Low	    1.982			
+# F1_Moderate	1.987			
+# F2_High	    1.987			
+# F2_Low	    1.989			
+# F2_Moderate	1.989			
+# F3_High	    1.991	* HIGHEST	
+# F3_Low	    1.983			
+# F3_Moderate	1.989	
+```
+
+
+### Calculate basic stats using hierfstat
+
+* used downstream for hetrozygoisity, inbreeding coeff, fst , etc. 
+
+```{r basic stats using hierfstat}
+
+# Low v Mod
+basic_LowvMod = basic.stats(LowvMod_gen, diploid = TRUE)
+
+# All
+basic_All = basic.stats(All_gen, diploid = TRUE)
+```
+
+
+### Calculate heterozygosity per site using hierfstat, observed and expected + visualize
+
+```{r heterozygosity}
+
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# Mean observed heterozygosity per site
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# Low v Mod
+Ho_LowvMod = apply(basic_LowvMod$Ho, 
+                   MARGIN = 2, 
+                   FUN = mean, 
+                   na.rm = TRUE) %>%
+             round(digits = 2)
+Ho_LowvMod
+# F1_Low F1_Moderate      F2_Low F2_Moderate      F3_Low F3_Moderate 
+#   0.34        0.34        0.34        0.35        0.35        0.37 
+
+
+# All
+Ho_All = apply(basic_All$Ho, 
+                   MARGIN = 2, 
+                   FUN = mean, 
+                   na.rm = TRUE) %>%
+             round(digits = 2)
+Ho_All
+# F1_Low F1_Moderate     F2_High      F2_Low F2_Moderate     F3_High      F3_Low F3_Moderate 
+#   0.34        0.34        0.35        0.34        0.35        0.37        0.35        0.37 
+
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# Mean expected heterozygosity per site
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# Low v Mod
+He_LowvMod = apply(basic_LowvMod$Hs, 
+                   MARGIN = 2, 
+                   FUN = mean, 
+                   na.rm = TRUE) %>%
+             round(digits = 2)
+He_LowvMod
+    # F1_Low F1_Moderate      F2_Low F2_Moderate      F3_Low F3_Moderate 
+    #    0.25        0.25        0.25        0.26        0.26        0.27
+
+
+# All
+He_All = apply(basic_All$Hs, 
+                   MARGIN = 2, 
+                   FUN = mean, 
+                   na.rm = TRUE) %>%
+             round(digits = 2)
+He_All
+     # F1_Low F1_Moderate     F2_High      F2_Low F2_Moderate     F3_High      F3_Low F3_Moderate 
+     #   0.25        0.25        0.25        0.25        0.26        0.27        0.26        0.27
+       
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# Create a data.frame of site names, Ho and He and then convert to long format
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# Low v Mod
+Het_LowvMod_df = data.frame(Site = names(Ho_LowvMod), Ho = Ho_LowvMod, He = He_LowvMod) %>%
+  melt(id.vars = "Site")
+
+
+# All
+Het_All_df = data.frame(Site = names(Ho_All), Ho = Ho_All, He = He_All) %>%
+  melt(id.vars = "Site")
+
+
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# Visualise heterozygosity per site
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# Custom theme for ggplot2
+custom_theme = theme(
+                      axis.text.x = element_text(size = 10, angle = 90, vjust = 0.5, face = "bold"),
+                      axis.text.y = element_text(size = 10),
+                      axis.title.y = element_text(size = 12),
+                      axis.title.x = element_blank(),
+                      axis.line.y = element_line(size = 0.5),
+                      legend.title = element_blank(),
+                      legend.text = element_text(size = 12),
+                      panel.grid = element_blank(),
+                      panel.background = element_blank(),
+                      plot.title = element_text(hjust = 0.5, size = 15, face="bold")
+                      )
+hetlab.o = expression(italic("H")[o]) # Italic label
+hetlab.e = expression(italic("H")[e]) # Italic label
+
+
+# Low v Mod (Het_LowvMod_df)
+ggplot(data = Het_LowvMod_df, aes(x = Site, y = value, fill = variable))+
+  geom_bar(stat = "identity", position = position_dodge(width = 0.6), colour = "black")+
+  scale_y_continuous(expand = c(0,0), limits = c(0,0.50))+
+  scale_fill_manual(values = c("royalblue", "#bdbdbd"), labels = c(hetlab.o, hetlab.e))+
+  ylab("Heterozygosity")+
+  ggtitle("Scallops Low v Mod multigenerational")+
+  custom_theme 
+
+
+# All (Het_All_df)
+ggplot(data = Het_All_df, aes(x = Site, y = value, fill = variable))+
+  geom_bar(stat = "identity", position = position_dodge(width = 0.6), colour = "black")+
+  scale_y_continuous(expand = c(0,0), limits = c(0,0.50))+
+  scale_fill_manual(values = c("royalblue", "#bdbdbd"), labels = c(hetlab.o, hetlab.e))+
+  ylab("Heterozygosity")+
+  ggtitle("Scallops Low v Mod multigenerational")+
+  custom_theme 
+```
+
+### Inbreeding coefficient (FIS)
+
+* Calculate mean FIS per pop (gen_treatment)
+
+```{r inbreeding coeff calculate}
+
+# Low v Mod
+apply(basic_LowvMod$Fis, 
+      MARGIN = 2, 
+      FUN = mean, 
+      na.rm = TRUE) %>%
+  round(digits = 3)
+     # F1_Low F1_Moderate      F2_Low F2_Moderate      F3_Low F3_Moderate 
+     # -0.226      -0.225      -0.226      -0.242      -0.233      -0.255
+
+
+# All
+apply(basic_All$Fis, 
+      MARGIN = 2, 
+      FUN = mean, 
+      na.rm = TRUE) %>%
+  round(digits = 3)
+   # F1_Low F1_Moderate     F2_High      F2_Low F2_Moderate     F3_High      F3_Low F3_Moderate 
+   #   -0.226      -0.225      -0.228      -0.226      -0.242      -0.256      -0.233      -0.255 
+```
+
+
+### FST, PCA & DAPC
+
+* FST - Compute pairwise FST (Weir & Cockerham 1984).
+
+```{r calc fst}
+# (optional) Subset data sets to reduce computation time
+# LowvMod_gen_sub = popsub(LowvMod_gen, sublist = c("<insert here!>"))
+
+
+# Low v Mod
+
+# Compute pairwise Fsts # if complete this is a LOOONG computational time
+LowvMod_gen_fst = genet.dist(LowvMod_gen, method = "WC84") %>% round(digits = 3) # takes a looong time
+LowvMod_gen_fst
+            #  F1_Low F1_Moderate F2_Low F2_Moderate F3_Low
+# F1_Moderate  0.002                                      
+# F2_Low       0.004       0.004                          
+# F2_Moderate  0.005       0.004  0.004                   
+# F3_Low       0.008       0.007  0.005       0.005       
+# F3_Moderate  0.008       0.007  0.007       0.004  0.006
+
+
+
+# All
+
+# Compute pairwise Fsts # if complete this is a LOOONG computational time
+All_gen_fst = genet.dist(All_gen, method = "WC84") %>% round(digits = 3) # takes a looong time
+All_gen_fst
+#             F1_Low F1_Moderate F2_High F2_Low F2_Moderate F3_High F3_Low
+# F1_Moderate  0.002                                                      
+# F2_High      0.005       0.004                                          
+# F2_Low       0.004       0.004   0.004                                  
+# F2_Moderate  0.005       0.004   0.005  0.004                           
+# F3_High      0.007       0.007   0.005  0.005       0.005               
+# F3_Low       0.008       0.007   0.007  0.005       0.005   0.005       
+# F3_Moderate  0.008       0.007   0.007  0.007       0.004   0.005  0.006
+```
+
+```{r visualize fst: LowvMod_gen_fst}
+
+# Desired order of labels
+lab_order = c('F1_Low', 'F1_Moderate', 'F2_Low', 'F2_Moderate', 'F3_Low', 'F3_Moderate')# MUST MATCH THE GENIND STRATA
+
+# Change order of rows and cols
+fst.mat = as.matrix(LowvMod_gen_fst) # JUST CHANGE THIS FST INPUT HERE 
+fst.mat1 = fst.mat[lab_order, ]
+fst.mat2 = fst.mat1[, lab_order]
+
+# Create a data.frame
+ind = which(upper.tri(fst.mat2), arr.ind = TRUE)
+fst.df = data.frame(Site1 = dimnames(fst.mat2)[[2]][ind[,2]],
+                    Site2 = dimnames(fst.mat2)[[1]][ind[,1]],
+                    Fst = fst.mat2[ ind ])
+
+# Keep the order of the levels in the data.frame for plotting 
+fst.df$Site1 = factor(fst.df$Site1, levels = unique(fst.df$Site1))
+fst.df$Site2 = factor(fst.df$Site2, levels = unique(fst.df$Site2))
+
+# Convert minus values to zero
+fst.df$Fst[fst.df$Fst < 0] = 0
+
+# Print data.frame summary
+fst.df %>% str
+## 'data.frame':    15 obs. of  3 variables:
+##  $ Site1: Factor w/ 5 levels "Brd","Pad","Vig",..: 1 2 2 3 3 3 4 4 4 4 ...
+##  $ Site2: Factor w/ 5 levels "Ber","Brd","Pad",..: 1 1 2 1 2 3 1 2 3 4 ...
+##  $ Fst  : num  0.007 0.025 0.008 0.064 0.038 0.018 0.174 0.171 0.161 0.112 ...
+
+# Fst italic label
+fst.label = expression(italic("F")[ST])
+
+# Extract middle Fst value for gradient argument
+mid = max(fst.df$Fst) / 2
+
+# Plot heatmap
+ggplot(data = fst.df, 
+       aes(x = Site1, 
+           y = Site2, 
+           fill = Fst))+
+  geom_tile(colour = "black")+
+  geom_text(aes(label = Fst), 
+            color="black", 
+            size = 3)+
+  scale_fill_gradient2(low = "blue", 
+                       mid = "pink", 
+                       high = "red", 
+                       midpoint = mid, 
+                       name = fst.label, 
+                       limits = c(0, max(fst.df$Fst)), 
+                       breaks = c(0, 0.05, 0.10, 0.15))+
+  scale_x_discrete(expand = c(0,0))+
+  scale_y_discrete(expand = c(0,0), position = "right")+
+  theme(axis.text = element_text(colour = "black", size = 10, face = "bold"),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        legend.position = "right",
+        legend.title = element_text(size = 14, face = "bold"),
+        legend.text = element_text(size = 10)
+        )
+
+# Export plot
+path_out <- "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/RAnalysis/Output/Popgen"
+ggsave(
+  paste0(path_out, "/Low_v_Mod_Fst.png"), 
+         width = 8, height = 6, dpi = 600)
+```
+
+```{r visualize fst: All_gen_fst}
+
+# Desired order of labels
+lab_order = c('F1_Low', 'F1_Moderate', 
+              'F2_Low', 'F2_Moderate', 'F2_High',
+              'F3_Low', 'F3_Moderate', 'F3_High')# MUST MATCH THE GENIND STRATA
+
+# Change order of rows and cols
+fst.mat = as.matrix(All_gen_fst) # JUST CHANGE THIS FST INPUT HERE 
+fst.mat1 = fst.mat[lab_order, ]
+fst.mat2 = fst.mat1[, lab_order]
+
+# Create a data.frame
+ind = which(upper.tri(fst.mat2), arr.ind = TRUE)
+fst.df = data.frame(Site1 = dimnames(fst.mat2)[[2]][ind[,2]],
+                    Site2 = dimnames(fst.mat2)[[1]][ind[,1]],
+                    Fst = fst.mat2[ ind ])
+
+# Keep the order of the levels in the data.frame for plotting 
+fst.df$Site1 = factor(fst.df$Site1, levels = unique(fst.df$Site1))
+fst.df$Site2 = factor(fst.df$Site2, levels = unique(fst.df$Site2))
+
+# Convert minus values to zero
+fst.df$Fst[fst.df$Fst < 0] = 0
+
+# Print data.frame summary
+fst.df %>% str
+# 'data.frame':	28 obs. of  3 variables:
+#  $ Site1: Factor w/ 7 levels "F1_Moderate",..: 1 2 2 3 3 3 4 4 4 4 ...
+#  $ Site2: Factor w/ 7 levels "F1_Low","F1_Moderate",..: 1 1 2 1 2 3 1 2 3 4 ...
+#  $ Fst  : num  0.002 0.004 0.004 0.005 0.004 0.004 0.005 0.004 0.004 0.005 ...
+
+# Fst italic label
+fst.label = expression(italic("F")[ST])
+
+# Extract middle Fst value for gradient argument
+mid = max(fst.df$Fst) / 2
+
+# Plot heatmap
+ggplot(data = fst.df, 
+       aes(x = Site1, 
+           y = Site2, 
+           fill = Fst))+
+  geom_tile(colour = "black")+
+  geom_text(aes(label = Fst), 
+            color="black", 
+            size = 3)+
+  scale_fill_gradient2(low = "blue", 
+                       mid = "pink", 
+                       high = "red", 
+                       midpoint = mid, 
+                       name = fst.label, 
+                       limits = c(0, max(fst.df$Fst)), 
+                       breaks = c(0, 0.05, 0.10, 0.15))+
+  scale_x_discrete(expand = c(0,0))+
+  scale_y_discrete(expand = c(0,0), position = "right")+
+  theme(axis.text = element_text(colour = "black", size = 10, face = "bold"),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        legend.position = "right",
+        legend.title = element_text(size = 14, face = "bold"),
+        legend.text = element_text(size = 10)
+        )
+
+# Export plot
+path_out <- "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/RAnalysis/Output/Popgen"
+ggsave(
+  paste0(path_out, "/All_Fst.png"), 
+         width = 8, height = 6, dpi = 600)
+```
+
+
+
+### PCA 
+
+* Perform a PCA (Principle component ananlysis) on the scallop data low v mod
+
+```{r PCA run: Low v Mod}
+
+x.LowvMod       = tab(LowvMod_gen, NA.method = "mean") # Replace missing data with the mean allele frequencies
+pca1.LowvMod    = dudi.pca(x.LowvMod, scannf = FALSE, scale = FALSE, nf = 3) # Perform PCA
+percent.LowvMod = pca1.LowvMod$eig/sum(pca1.LowvMod$eig)*100 # Analyse how much percent of genetic variance is explained by each axis
+barplot(percent.LowvMod, 
+        ylab = "Genetic variance explained by eigenvectors (%)", 
+        ylim = c(0,1.5),
+        names.arg = round(percent.LowvMod, 1))
+
+```
+
+```{r PCA run: All}
+
+x.All       = tab(All_gen, NA.method = "mean") # Replace missing data with the mean allele frequencies
+pca1.All    = dudi.pca(x.All, scannf = FALSE, scale = FALSE, nf = 3) # Perform PCA
+percent.All = pca1.All$eig/sum(pca1.All$eig)*100 # Analyse how much percent of genetic variance is explained by each axis
+barplot(percent.All, 
+        ylab = "Genetic variance explained by eigenvectors (%)", 
+        ylim = c(0,1.5),
+        names.arg = round(percent.All, 1))
+
+```
+
+* Visualise PCA results.
+```{r PCA plot: Low v Mod}
+# Create a data.frame containing individual coordinates
+ind_coords = as.data.frame(pca1.LowvMod$li)
+
+# Rename columns of dataframe
+colnames(ind_coords) = c("Axis1","Axis2","Axis3")
+
+# Add a column containing individuals
+ind_coords$Ind = indNames(LowvMod_gen)
+
+# Add a column with the site IDs
+ind_coords$Site = LowvMod_gen$pop
+
+# Calculate centroid (average) position for each population
+centroid = aggregate(cbind(Axis1, Axis2, Axis3) ~ Site, data = ind_coords, FUN = mean)
+
+# Add centroid coordinates to ind_coords dataframe
+ind_coords = left_join(ind_coords, centroid, by = "Site", suffix = c("",".cen"))
+
+# Define colour palette
+cols = brewer.pal(nPop(LowvMod_gen), "Set1")
+
+# Custom x and y labels
+xlab = paste("Axis 1 (", format(round(percent.LowvMod[1], 1), nsmall=1)," %)", sep="")
+ylab = paste("Axis 2 (", format(round(percent.LowvMod[2], 1), nsmall=1)," %)", sep="")
+
+# Custom theme for ggplot2
+ggtheme = theme(axis.text.y = element_text(colour="black", size=12),
+                axis.text.x = element_text(colour="black", size=12),
+                axis.title = element_text(colour="black", size=12),
+                panel.border = element_rect(colour="black", fill=NA, size=1),
+                panel.background = element_blank(),
+                plot.title = element_text(hjust=0.5, size=15) 
+)
+
+# Scatter plot axis 1 vs. 2
+ggplot(data = ind_coords, aes(x = Axis1, y = Axis2))+
+  geom_hline(yintercept = 0)+
+  geom_vline(xintercept = 0)+
+  # spider segments
+  geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), show.legend = FALSE)+
+  # points
+  geom_point(aes(fill = Site), shape = 21, size = 3, show.legend = FALSE)+
+  # centroids
+  geom_label(data = centroid, aes(label = Site, fill = Site), size = 4, show.legend = FALSE)+
+  # colouring
+  scale_fill_manual(values = cols)+
+  scale_colour_manual(values = cols)+
+  # custom labels
+  labs(x = xlab, y = ylab)+
+  ggtitle("Scallops Low v Mod multigenerational PCA")+
+  # custom theme
+  ggtheme
+
+# Export plot
+path_out <- "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/RAnalysis/Output/Popgen"
+ggsave(
+  paste0(path_out, "/Low_v_Mod_PCA.png"), 
+         width = 8, height = 8, dpi = 600)
+```
+
+```{r PCA plot: All}
+# Create a data.frame containing individual coordinates
+ind_coords = as.data.frame(pca1.All$li)
+
+# Rename columns of dataframe
+colnames(ind_coords) = c("Axis1","Axis2","Axis3")
+
+# Add a column containing individuals
+ind_coords$Ind = indNames(All_gen)
+
+# Add a column with the site IDs
+ind_coords$Site = All_gen$pop
+
+# Calculate centroid (average) position for each population
+centroid = aggregate(cbind(Axis1, Axis2, Axis3) ~ Site, data = ind_coords, FUN = mean)
+
+# Add centroid coordinates to ind_coords dataframe
+ind_coords = left_join(ind_coords, centroid, by = "Site", suffix = c("",".cen"))
+
+# Define colour palette
+cols = brewer.pal(nPop(All_gen), "Set1")
+
+# Custom x and y labels
+xlab = paste("Axis 1 (", format(round(percent.All[1], 1), nsmall=1)," %)", sep="")
+ylab = paste("Axis 2 (", format(round(percent.All[2], 1), nsmall=1)," %)", sep="")
+
+# Custom theme for ggplot2
+ggtheme = theme(axis.text.y = element_text(colour="black", size=12),
+                axis.text.x = element_text(colour="black", size=12),
+                axis.title = element_text(colour="black", size=12),
+                panel.border = element_rect(colour="black", fill=NA, size=1),
+                panel.background = element_blank(),
+                plot.title = element_text(hjust=0.5, size=15) 
+)
+
+# Scatter plot axis 1 vs. 2
+ggplot(data = ind_coords, aes(x = Axis1, y = Axis2))+
+  geom_hline(yintercept = 0)+
+  geom_vline(xintercept = 0)+
+  # spider segments
+  geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), show.legend = FALSE)+
+  # points
+  geom_point(aes(fill = Site), shape = 21, size = 3, show.legend = FALSE)+
+  # centroids
+  geom_label(data = centroid, aes(label = Site, fill = Site), size = 4, show.legend = FALSE)+
+  # colouring
+  scale_fill_manual(values = cols)+
+  scale_colour_manual(values = cols)+
+  # custom labels
+  labs(x = xlab, y = ylab)+
+  ggtitle("Scallops Low v Mod multigenerational PCA")+
+  # custom theme
+  ggtheme
+
+# Export plot
+path_out <- "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/RAnalysis/Output/Popgen"
+ggsave(
+  paste0(path_out, "/All_PCA.png"), 
+         width = 8, height = 8, dpi = 600)
+```
+
+
+### DAPC
+
+* Perform a DAPC (discriminant analysis of principal components) on the scallod data low v mod
+
+```{r DAPC run: Low v Mod}
+
+# Perform cross validation to find the optimal number of PCs to retain in DAPC
+set.seed(123)
+x.LowvMod        = tab(LowvMod_gen, NA.method = "mean")
+crossval.LowvMod = xvalDapc(x.LowvMod, LowvMod_gen$pop, result = "groupMean", xval.plot = TRUE) # this takes a LOONG TIME
+
+# Number of PCs with best stats (lower score = better)
+crossval.LowvMod$`Root Mean Squared Error by Number of PCs of PCA`
+#        20        40        60        80       100       120       140       160       180       200       220       240 
+# 0.2948826 0.2339674 0.2348255 0.2290277 0.2305232 0.2462350 0.3110235 0.3461903 0.3709736 0.4446203 0.5379105 0.6412428
+crossval.LowvMod$`Number of PCs Achieving Highest Mean Success`
+## [1] "60"
+crossval.LowvMod$`Number of PCs Achieving Lowest MSE`
+# [1] "80"
+numPCs.LowvMod = as.numeric(crossval.LowvMod$`Number of PCs Achieving Lowest MSE`)
+# # [1] "80"
+
+# Run a DAPC using site IDs as priors
+dapc1.LowvMod = dapc(LowvMod_gen, LowvMod_gen$pop, n.pca = numPCs.LowvMod, n.da = 3)
+
+# Analyse how much percent of genetic variance is explained by each axis
+percent.LowvMod = dapc1.LowvMod$eig/sum(dapc1.LowvMod$eig)*100
+barplot(percent.LowvMod, 
+        ylab = "Genetic variance explained by eigenvectors (%)", 
+        ylim = c(0,60),
+        names.arg = round(percent.LowvMod, 1))
+```
+
+
+```{r DAPC run: All}
+
+# Perform cross validation to find the optimal number of PCs to retain in DAPC
+set.seed(123)
+x.All        = tab(All_gen, NA.method = "mean")
+crossval.All = xvalDapc(x.All, All_gen$pop, result = "groupMean", xval.plot = TRUE) # this takes a LOONG TIME
+
+# Number of PCs with best stats (lower score = better)
+crossval.All$`Root Mean Squared Error by Number of PCs of PCA`
+#        50       100       150       200       250       300 
+# 0.2656880 0.2420881 0.2851360 0.3423583 0.4923688 0.7068535 
+crossval.All$`Number of PCs Achieving Highest Mean Success`
+## [1] "100
+crossval.All$`Number of PCs Achieving Lowest MSE`
+# [1] "100"
+numPCs.All = as.numeric(crossval.All$`Number of PCs Achieving Lowest MSE`)
+# # [1] "100"
+
+# Run a DAPC using site IDs as priors
+dapc1.All = dapc(All_gen, All_gen$pop, n.pca = numPCs.All, n.da = 3)
+
+# Analyse how much percent of genetic variance is explained by each axis
+percent.All = dapc1.All$eig/sum(dapc1.All$eig)*100
+barplot(percent.All, 
+        ylab = "Genetic variance explained by eigenvectors (%)", 
+        ylim = c(0,60),
+        names.arg = round(percent.All, 1))
+```
+
+
+* Visualise DAPC results.
+
+```{r  DAPC plot: Low v Mod}
+
+# Create a data.frame containing individual coordinates
+ind_coords = as.data.frame(dapc1.LowvMod$ind.coord)
+
+# Rename columns of dataframe
+colnames(ind_coords) = c("Axis1","Axis2","Axis3")
+
+# Add a column containing individuals
+ind_coords$Ind = indNames(LowvMod_gen)
+
+# Add a column with the site IDs
+ind_coords$Site = LowvMod_gen$pop
+
+# Calculate centroid (average) position for each population
+centroid = aggregate(cbind(Axis1, Axis2, Axis3) ~ Site, data = ind_coords, FUN = mean)
+
+# Add centroid coordinates to ind_coords dataframe
+ind_coords = left_join(ind_coords, centroid, by = "Site", suffix = c("",".cen"))
+
+# Define colour palette
+cols = brewer.pal(nPop(LowvMod_gen), "Set2")
+
+# Custom x and y labels
+xlab = paste("Axis 1 (", format(round(percent.LowvMod[1], 1), nsmall=1)," %)", sep="")
+ylab = paste("Axis 2 (", format(round(percent.LowvMod[2], 1), nsmall=1)," %)", sep="")
+
+# Scatter plot axis 1 vs. 2
+ggplot(data = ind_coords, aes(x = Axis1, y = Axis2))+
+  geom_hline(yintercept = 0)+
+  geom_vline(xintercept = 0)+
+  # spider segments
+  geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), show.legend = FALSE)+
+  # points
+  geom_point(aes(fill = Site), shape = 21, size = 3, show.legend = FALSE)+
+  # centroids
+  geom_label(data = centroid, aes(label = Site, fill = Site), size = 4, show.legend = FALSE)+
+  # colouring
+  scale_fill_manual(values = cols)+
+  scale_colour_manual(values = cols)+
+  # custom labels
+  labs(x = xlab, y = ylab)+
+  ggtitle("Scallops Low v Mod multigenerational DAPC")+
+  # custom theme
+  ggtheme
+
+# Export plot
+path_out <- "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/RAnalysis/Output/Popgen"
+ggsave(
+  paste0(path_out, "/Low_v_Mod_DAPC.png"), 
+         width = 8, height = 8, dpi = 600)
+```
+
+
+```{r  DAPC plot: All}
+
+# Create a data.frame containing individual coordinates
+ind_coords = as.data.frame(dapc1.All$ind.coord)
+
+# Rename columns of dataframe
+colnames(ind_coords) = c("Axis1","Axis2","Axis3")
+
+# Add a column containing individuals
+ind_coords$Ind = indNames(All_gen)
+
+# Add a column with the site IDs
+ind_coords$Site = All_gen$pop
+
+# Calculate centroid (average) position for each population
+centroid = aggregate(cbind(Axis1, Axis2, Axis3) ~ Site, data = ind_coords, FUN = mean)
+
+# Add centroid coordinates to ind_coords dataframe
+ind_coords = left_join(ind_coords, centroid, by = "Site", suffix = c("",".cen"))
+
+# Define colour palette
+cols = brewer.pal(nPop(All_gen), "Set2")
+
+# Custom x and y labels
+xlab = paste("Axis 1 (", format(round(percent.All[1], 1), nsmall=1)," %)", sep="")
+ylab = paste("Axis 2 (", format(round(percent.All[2], 1), nsmall=1)," %)", sep="")
+
+# Scatter plot axis 1 vs. 2
+ggplot(data = ind_coords, aes(x = Axis1, y = Axis2))+
+  geom_hline(yintercept = 0)+
+  geom_vline(xintercept = 0)+
+  # spider segments
+  geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), show.legend = FALSE)+
+  # points
+  geom_point(aes(fill = Site), shape = 21, size = 3, show.legend = FALSE)+
+  # centroids
+  geom_label(data = centroid, aes(label = Site, fill = Site), size = 4, show.legend = FALSE)+
+  # colouring
+  scale_fill_manual(values = cols)+
+  scale_colour_manual(values = cols)+
+  # custom labels
+  labs(x = xlab, y = ylab)+
+  ggtitle("Scallops All multigenerational DAPC")+
+  # custom theme
+  ggtheme
+
+# Export plot
+path_out <- "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/RAnalysis/Output/Popgen"
+ggsave(
+  paste0(path_out, "/All_DAPC.png"), 
+         width = 8, height = 8, dpi = 600)
+```
+
+
+
+## Basic stats for each chromosome (build and execute custom function)
+
+* Build bunction to run all the above split by chromosome!
+
+* execute a for loop to run the function and export all output dataframes and figures
+
+```{r build BasicStats_chromsplit}
+
+chrom_ID     <- c('CM084264.1', 'CM084265.1', 'CM084266.1', 'CM084267.1', 
+                  'CM084268.1', 'CM084269.1', 'CM084270.1', 'CM084271.1', 
+                  'CM084272.1', 'CM084273.1', 'CM084274.1', 'CM084275.1',
+                  'CM084276.1', 'CM084277.1', 'CM084278.1', 'CM084279.1')
+
+chrom_number <- c(1,2,3,4,
+                  5,6,7,8,
+                  9,10,11,12,
+                  13,14,15,16)
+  
+chrom_DF     <- data.frame(chrom_ID, chrom_number)
+
+# Custom theme for ggplot2
+custom_theme = theme(
+                      axis.text.x = element_text(size = 10, angle = 90, vjust = 0.5, face = "bold"),
+                      axis.text.y = element_text(size = 10),
+                      axis.title.y = element_text(size = 12),
+                      axis.title.x = element_blank(),
+                      axis.line.y = element_line(size = 0.5),
+                      legend.title = element_blank(),
+                      legend.text = element_text(size = 12),
+                      panel.grid = element_blank(),
+                      panel.background = element_blank(),
+                      plot.title = element_text(hjust = 0.5, size = 15, face="bold")
+                      )
+
+# run function
+BasicStats_chromsplit <- function(chrom_num) {
+  
+   chrom_id       <- (chrom_DF %>% dplyr::filter(chrom_number == chrom_num))$chrom_ID 
+   chrom.vcf      <- F1F2F3_LOW_MOD.vcf[F1F2F3_LOW_MOD.vcf@fix[, "CHROM"] %in% chrom_id, ] # 300 variants 
+   chrom.metadata <- All.metadata %>% dplyr::filter(id %in% colnames(chrom.vcf@gt[,2:length(colnames(chrom.vcf@gt))]))
+   
+   # prep genind
+   ind      = as.character(chrom.metadata$id) # individual ID
+   gen_pCO2 = as.character(chrom.metadata$gen_treatment) # our metadata to calc pairwise fst
+   strata_df <- data.frame(ID = ind,  Population = gen_pCO2) 
+   
+   # create genind
+   chrom_gen <- vcfR::vcfR2genind(chrom.vcf, sep = "[|/]", pop = strata_df$Population, strata = strata_df)
+   
+   # mean allelic richness per site across all loci
+   AR_df <- as.data.frame(allelic.richness(genind2hierfstat(chrom_gen))$Ar %>%
+                          apply(MARGIN = 2, FUN = mean) %>% 
+                          round(digits = 3)) %>% dplyr::rename(allelicrichness = names(.)[1])
+   
+   # heirfstat basic stats
+   basic_chrom = basic.stats(chrom_gen, diploid = TRUE)
+   
+ 
+   # mean observed heterozygosity per site
+   Ho_chrom = apply(basic_chrom$Ho, 
+                     MARGIN = 2, 
+                     FUN = mean, 
+                     na.rm = TRUE) %>%
+               round(digits = 2)
+  
+   # Mean expected heterozygosity per site
+   He_chrom = apply(basic_chrom$Hs, 
+                     MARGIN = 2, 
+                     FUN = mean, 
+                     na.rm = TRUE) %>%
+               round(digits = 2)
+  # Visualize heterozygosity barplot
+  # Create a data.frame of site names, Ho and He and then convert to long format
+  Het_chrom_df = data.frame(Site = names(Ho_chrom), Ho = Ho_chrom, He = He_chrom) %>% melt(id.vars = "Site")
+  hetlab.o = expression(italic("H")[o]) # Italic label
+  hetlab.e = expression(italic("H")[e])# Italic label
+  het_barplot <- ggplot(data = Het_chrom_df, aes(x = Site, y = value, fill = variable))+
+                            geom_bar(stat = "identity", position = position_dodge(width = 0.6), colour = "black")+
+                            scale_y_continuous(expand = c(0,0), limits = c(0,0.50))+
+                            scale_fill_manual(values = c("royalblue", "#bdbdbd"), labels = c(hetlab.o, hetlab.e))+
+                            ylab("Heterozygosity")+
+                            ggtitle(paste0("Chromosome # ",chrom_num, ": Low v Mod multigenerational")) +
+                            custom_theme
+
+
+   # inbreeding coefficient Fis across all loci
+   InbCoeff_df <- as.data.frame(apply(basic_chrom$Fis, 
+                                MARGIN = 2, 
+                                FUN = mean, 
+                                na.rm = TRUE) %>%
+                            round(digits = 3)) %>% dplyr::rename(Fis_inbreeding_coeff = names(.)[1])
+   
+   # calculate Fst
+   chrom_fst = genet.dist(chrom_gen, method = "WC84") %>% round(digits = 3)
+    # visualize Fst
+   lab_order = c('F1_Low', 'F1_Moderate', 'F2_Low', 'F2_Moderate', 'F3_Low', 'F3_Moderate') # Desired order of labels
+   # Change order of rows and cols
+   fst.mat = as.matrix(LowvMod_gen_fst)
+   fst.mat1 = fst.mat[lab_order, ]
+   fst.mat2 = fst.mat1[, lab_order]
+   # Create a data.frame
+   ind = which(upper.tri(fst.mat2), arr.ind = TRUE)
+   fst.df = data.frame(Site1 = dimnames(fst.mat2)[[2]][ind[,2]],
+                      Site2 = dimnames(fst.mat2)[[1]][ind[,1]],
+                      Fst = fst.mat2[ ind ])
+   # Keep the order of the levels in the data.frame for plotting 
+   fst.df$Site1 = factor(fst.df$Site1, levels = unique(fst.df$Site1))
+   fst.df$Site2 = factor(fst.df$Site2, levels = unique(fst.df$Site2))
+   # Convert minus values to zero
+   fst.df$Fst[fst.df$Fst < 0] = 0
+   # Fst italic label
+   fst.label = expression(italic("F")[ST])
+   # Extract middle Fst value for gradient argument
+   mid = max(fst.df$Fst) / 2
+   # Plot heatmap
+   Fst_heatmap <-  ggplot(data = fst.df, 
+                           aes(x = Site1, 
+                               y = Site2, 
+                               fill = Fst))+
+                      geom_tile(colour = "black")+
+                      geom_text(aes(label = Fst), 
+                                color="black", 
+                                size = 3)+
+                      scale_fill_gradient2(low = "blue", 
+                                           mid = "pink", 
+                                           high = "red", 
+                                           midpoint = mid, 
+                                           name = fst.label, 
+                                           limits = c(0, max(fst.df$Fst)), 
+                                           breaks = c(0, 0.05, 0.10, 0.15))+
+                      scale_x_discrete(expand = c(0,0))+
+                      scale_y_discrete(expand = c(0,0), position = "right")+
+                      ggtitle(paste0("Chromosome # ",chrom_num, ": Low v Mod multigenerational")) +
+                      theme(axis.text = element_text(colour = "black", size = 10, face = "bold"),
+                            axis.title = element_blank(),
+                            panel.grid = element_blank(),
+                            panel.background = element_blank(),
+                            legend.position = "right",
+                            legend.title = element_text(size = 14, face = "bold"),
+                            legend.text = element_text(size = 10)
+                            )
+
+
+   
+    # perform DAPC 
+   
+    # Perform cross validation to find the optimal number of PCs to retain in DAPC
+    set.seed(123)
+    x        = tab(chrom_gen, NA.method = "mean")
+    crossval = xvalDapc(x, chrom_gen$pop, result = "groupMean", xval.plot = TRUE) # this takes a LOONG TIME
+    numPCs   = as.numeric(crossval$`Number of PCs Achieving Lowest MSE`)
+    # Run a DAPC using site IDs as priors
+    dapc1 = dapc(chrom_gen, chrom_gen$pop, n.pca = numPCs, n.da = 3)
+    # Analyse how much percent of genetic variance is explained by each axis
+    percent = dapc1$eig/sum(dapc1$eig)*100  
+   
+    # visualize DAPC results
+    
+    ind_coords = as.data.frame(dapc1$ind.coord)
+    colnames(ind_coords) = c("Axis1","Axis2","Axis3") # Rename columns of dataframe
+    ind_coords$Ind = indNames(LowvMod_gen) # Add a column containing individuals
+    ind_coords$Site = LowvMod_gen$pop # Add a column with the site IDs
+    centroid = aggregate(cbind(Axis1, Axis2, Axis3) ~ Site, data = ind_coords, FUN = mean) # Calculate centroid (average) position for each population
+    ind_coords = left_join(ind_coords, centroid, by = "Site", suffix = c("",".cen")) # Add centroid coordinates to ind_coords dataframe
+    cols = brewer.pal(nPop(LowvMod_gen), "Set2") # Define colour palette
+    xlab = paste("Axis 1 (", format(round(percent[1], 1), nsmall=1)," %)", sep="") # Custom x and y labels
+    ylab = paste("Axis 2 (", format(round(percent[2], 1), nsmall=1)," %)", sep="") # Custom x and y labels
+    
+    # Scatter plot axis 1 vs. 2
+    DAPC_plot <- ggplot(data = ind_coords, aes(x = Axis1, y = Axis2))+
+                        geom_hline(yintercept = 0)+
+                        geom_vline(xintercept = 0)+
+                        geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), show.legend = FALSE)+
+                        geom_point(aes(fill = Site), shape = 21, size = 3, show.legend = FALSE)+
+                        geom_label(data = centroid, aes(label = Site, fill = Site), size = 4, show.legend = FALSE)+
+                        scale_fill_manual(values = cols)+
+                        scale_colour_manual(values = cols)+
+                        labs(x = xlab, y = ylab)+
+                        ggtitle(paste0("Chromosome # ",chrom_num, ": DAPC Low v Mod multigenerational")) +
+                        ggtheme    
+    
+   # return
+   return(list(het_barplot = het_barplot,
+               Fst_heatmap = Fst_heatmap,
+               Allelic_Richness = AR_df,
+               Fis = InbCoeff_df,
+               Fst = fst.df,
+               DAPC = DAPC_plot))
+ }
+
+```
+
+
+```{r run BasicStats_chromsplit}
+
+# path
+path_out <- "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/RAnalysis/Output/Popgen/"
+
+# for loop each chromosome, output to existing subfolders by chromsome id
+for (i in 1:nrow(chrom_DF)) {
+  # run
+  chrom_basic_stats <- BasicStats_chromsplit(chrom_DF[i,2])
+  
+  # export results
+  
+  # allelic richness dataframe
+  write.csv(chrom_basic_stats$Allelic_Richness, 
+            paste0(path_out, "statistics/low_v_moderate/Allelic_richness/",chrom_DF[i,1], "_AR.csv"))
+  
+  # fis dataframe 
+  write.csv(chrom_basic_stats$Fis, 
+            paste0(path_out, "statistics/low_v_moderate/Fis/",chrom_DF[i,1], "_Fis.csv"))
+  
+  # fst dataframe
+  write.csv(chrom_basic_stats$Fst, 
+            paste0(path_out, "statistics/low_v_moderate/Fst/",chrom_DF[i,1], "_Fst.csv"))
+  
+  # heterzygosity data and barplot 
+  pdf(paste0(path_out, "statistics/low_v_moderate/Het/",chrom_DF[i,1], "_Ho_He_barplot.pdf"), width = 6, height = 5)
+  print(chrom_basic_stats$het_barplot)
+  dev.off()
+  
+  # fst heatmap
+  pdf(paste0(path_out, "statistics/low_v_moderate/Fst/",chrom_DF[i,1], "_Fst_heatmap.pdf"), width = 6, height = 5)
+  print(chrom_basic_stats$Fst_heatmap)
+  dev.off()
+  
+  # DAPC plot
+  pdf(paste0(path_out, "statistics/low_v_moderate/DAPC/",chrom_DF[i,1], "_DAPC.pdf"), width = 6, height = 5)
+  print(chrom_basic_stats$DAPC)
+  dev.off()  
+}
+  
+
+```
+
+
+## OutFLANK
+
+**Objective** detect outlier loci that may be due to spatially heterogeneous selection.
+
+**About** OutFLANK finds outliers for FST, but it needs to use estimates of FST that have not been corrected for sample size adjustments. 
+
+View details for ```OutFLANK``` copied/pasted below [here](https://rpubs.com/lotterhos/outflank)
+
+* Inputs
+
+- Appropriate dataframe for OutFLANK is assembled with MakeDiploidFSTMat(SNPmat,locusNames,popNames)
+
+  - SNPmat: is an array with a row for each individual in the data set and a column for each locus. This function assumes biallelic (i.e. SNP) data, and the value in each column is either 0, 1 or 2, showing the number of the focal alleles that the individual carries at that locus.
+  
+  - locusNames: a character vector that gives a list of identifying names for each locus. (The length of the locusNames vector should be the same as the number of columns in SNPmat.)
+  
+  - popNames: a character vector that has an entry for each individual, in the same order as the rows in SNPmat, which gives the population that that individual came from. OutFLANK assumes that the individuals are grouped into relatively discrete populations, so there must be multiple individuals per population for the function to work properly.
+  
+* Outputs
+
+
+### Assemble SNPmat, locusNames, and popNames for ```MakeDiploidFSTMat```
+
+```{r data for MakeDiploidFSTMat}
+
+############################ #
+# SNPmat for OutFLANK ###### #
+############################ #
+
+## load compressed vcf file
+## then convert VCF format to SNP data format required by OutFLANK (Note that this is slow)
+All.vcf <- vcfR::read.vcfR(here::here(getwd(),
+                            "RAnalysis", 
+                            "Data", 
+                            "Popgen", 
+                            "03_prune", 
+                            "out.7.phased.vcf.gz"), verbose = FALSE)
+# subset for desired data - all offspring under low and moderate OA
+F1F2F3_LOW_MOD.vcf <- All.vcf[,c(1,27:139, 
+                              153:177, 198:250, 
+                              295:392)] 
+# convert
+convertVCFtoCount3 <- function(string){
+    # This function assumes 0 for reference
+    # and 1 for alternate allele
+    a <- as.numeric(unlist(strsplit(string, split = c("[|///]"))))
+    odd = seq(1, length(a), by=2)
+    a[odd] + a[odd+1]
+ }
+LowvMod.vcf.gen <- F1F2F3_LOW_MOD.vcf@gt[,-1]
+system.time(LowvMod.gen_table <- matrix(convertVCFtoCount3(LowvMod.vcf.gen), ncol=ncol(LowvMod.vcf.gen)))
+# user  system elapsed 
+# 0.57    0.00    1.38
+
+# finally, we are here
+LowvMod.SNPdata <- t(LowvMod.gen_table) # transpose, gen_table has columns as indivs, rows as loci, switch
+
+############################ #
+# locusNames ############### #
+############################ #
+
+LowvMod_locinames <- paste(F1F2F3_LOW_MOD.vcf@fix[,"CHROM"], 
+                           F1F2F3_LOW_MOD.vcf@fix[,"POS"], sep="_")
+length(LowvMod_locinames) == nrow(LowvMod.gen_table)
+
+############################ #
+# popNames - genlight object was created in line 157 from F1F2F3_LOW_MOD.vcf 
+############################ #
+
+LowvMod_gen@strata # grab population from here, first make sure its the same order as the matrix above
+# LowvMod_gen@strata$ID == rownames(LowvMod_matrix) # all MUST BE TRUE! good to go
+table(LowvMod_gen@strata$Population) # call LowvMod_gen@strata$Population in ```MakeDiploidFSTMat```
+# F1_Low F1_Moderate      F2_Low F2_Moderate      F3_Low F3_Moderate 
+#     58          55          32          46          49          49
+```
+
+### Run ```MakeDiploidFSTMat```
+
+* calculate Fst on the data
+
+```{r run MakeDiploidFSTMat}
+# INPUTS
+# SNPmat     = LowvMod.SNPdata 
+# locusNames = LowvMod.locinames
+# popNames   = LowvMod_gen@strata$Population
+
+# RUN it output as 'LowvMod.OutFLANK.Fst'
+LowvMod.FSTMat <- OutFLANK::MakeDiploidFSTMat(LowvMod.SNPdata, 
+                                              locusNames = LowvMod_locinames, 
+                                              popNames = LowvMod_gen@strata$Population)# MakeDiploidFSTMat(SNPmat,locusNames,popNames)
+head(LowvMod.FSTMat) # view first few rows
+```
+
+## Data checks: Heterozygosity vs. FST
+
+Here, you can see how some of the low H loci have high FST. 
+These are all neutral loci in the simulation, and it is important to exclude them from the OutFLANK algorithm.
+```{r, Check He vs. Fst}
+plot(LowvMod.FSTMat$He, LowvMod.FSTMat$FST)
+```
+
+## Data checks: FST vs. FSTNoCorr
+
+* To fit the FST distribution to chi-square, OutFLANK requires the FST uncorrected for sample size (`FSTNoCorr`). This is a valid approach as long as all loci have equal sample sizes within populations. The effect of correcting for sample size will make the corrected FST estimate (`FST`) lower than the uncorrected FST estimate (`FSTNoCorr`). Note that all loci deviate between `FST` and `FSTNoCorr` but OutFLANK assumes that these deviations are the same for each locus. If a locus has a much lower sample size compared to the rest, it could have a broader error distribution (and therefore incorrectly inferred as an outlier). 
+
+* Look for loci that deviate from the linear relationship in this plot, and remove those loci.
+
+* no loci deviate from the linear relationship (view below)
+
+```{r, Check Dst v FSTNoCorr}
+plot(LowvMod.FSTMat$FST, LowvMod.FSTMat$FSTNoCorr)
+abline(0,1)
+```
+
+## Data prep: decide which SNPs to use for calibrating the null distribution of Fst
+
+* Another good practice is to use a set of SNPs from the genome that are random and quasi-independent to calculate mean FST (`FSTbar`) and the degrees of freedom on the chi-square distribution (`df`).
+
+* Before running the OutFLANK() function to estimate the parameters on the neutral FST distribution, you will want to identify a quasi-independent set of SNPs to calculate `FSTbar` and `df`. A common way of obtaining these SNPs is to thin for linkage disequilibrium (SNP thinning), which typically moves along a genome in a sliding window and thins SNPs based on linkage disequilibrium with each other.
+
+* I conducted LD pruning with plink, the vcf file is already pruned!
+
+## OutFLANK analysis with quasi-independent set of SNPs
+
+Next, you can run the `OutFLANK()` function to estimate the parameters on the neutral FST distribution.
+```{r}
+#### Evaluating OutFLANK with trimmed SNPs ####
+library(OutFLANK)
+View(LowvMod.FSTMat)
+out_trim <- OutFLANK(
+  # (LowvMod.FSTMat %>% filter(!FST > 0.11)), # there are 2 resulting outliers, very high Fst, omit
+  LowvMod.FSTMat,
+    NumberOfSamples=6, # F1M, F1L, F2M, F2L, F3M, F3L = 6
+    # qthreshold = 0.03, 
+    LeftTrimFraction = 0.05, # lower Fst
+    RightTrimFraction = 0.05, # upper Fst
+    qthreshold = 0.05, # no outliers detected for high FSt
+    Hmin = 0.3 # 0.1
+  )
+str(out_trim)
+head(out_trim$results)
+```
+
+Check the fit and make sure it looks good, especially in the right tail:
+```{r, fig.width=6}
+OutFLANKResultsPlotter(out_trim, withOutliers = TRUE,
+                       NoCorr = TRUE, Hmin = 0.1, binwidth = 0.001, Zoom =
+                         FALSE, RightZoomFraction = 0.05, titletext = NULL)
+
+## Zoom in on right tail
+OutFLANKResultsPlotter(out_trim , withOutliers = TRUE,
+                       NoCorr = TRUE, Hmin = 0.1, binwidth = 0.001, Zoom =
+                         TRUE, RightZoomFraction = 0.15, titletext = NULL)
+```
+
+### Also check the P-value histogram:
+
+Here, we plot the "right-tailed" P-values, which means that outliers in the right tail of the FST distribution will have a P-value near zero. Because we ran the algorithm on a trimmed set of SNPs, this will remove some of the signal around selected sites. So we expect this histogram to be flat and maybe have a bump near 0 for selected sites. This histogram looks pretty good.
+```{r, fig.width=6}
+hist(out_trim$results$pvaluesRightTail)
+```
+
+
+
+
+
+```{r}
+
+
+LowvMod.FSTMat_OM <- (LowvMod.FSTMat %>% filter(!FST > 0.11))
+
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# not omitted of the two high outliers :::::::::::::::::::::::::::::
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+plot(LowvMod.FSTMat$FST, LowvMod.FSTMat$FSTNoCorr, 
+     xlim=c(-0.01,0.3), ylim=c(-0.01,0.3),
+     pch=20)
+abline(0,1)
+
+
+plot(LowvMod.FSTMat$He, LowvMod.FSTMat$FSTNoCorr, pch=20, col="grey")
+
+hist(LowvMod.FSTMat$FSTNoCorr, breaks=seq(0,0.3, by=0.001)) # Note the large FST values for loci with low heterozygosity (He < 0.1)
+
+hist(LowvMod.FSTMat$FSTNoCorr[LowvMod.FSTMat$He>0.05], breaks=seq(0,0.3, by=0.001))# Note how, when all loci are included, this doesn't look chi-square distributed 
+
+hist(LowvMod.FSTMat$FSTNoCorr[LowvMod.FSTMat$He>0.1], breaks=seq(0,0.3, by=0.001)) # Removing low Heterozygosity variants results in a more chi-square looking FST distribution                                  
+# Run outflank
+# NumberOfSamples is the number of populations sampled. This is the only other argument without a default, aside from the data frame.
+out1 <- OutFLANK(LowvMod.FSTMat, NumberOfSamples=6) # populayion groups
+
+# Visualize results
+OutFLANKResultsPlotter(out1, 
+                       withOutliers = TRUE,
+                       NoCorr = TRUE, 
+                       Hmin = 0.1, 
+                       binwidth = 0.001, 
+                       Zoom = FALSE, 
+                       RightZoomFraction = 0.05, 
+                       titletext = NULL)
+ 
+ 
+outlier = OutFLANK(LowvMod.FSTMat,NumberOfSamples = 6, 
+                     RightTrimFraction = 0.35, 
+                     LeftTrimFraction = 0.05,
+                     # RightTrimFraction = 0.06, 
+                     # LeftTrimFraction = 0.35,
+                     qthreshold = 0.05, 
+                     Hmin = 0.1)
+
+# increasing the Right Trim Fraction doesn't help, but increasing the left trim fraction enables a better fit
+OutFLANKResultsPlotter(outlier, 
+                       withOutliers = TRUE,
+                       NoCorr = TRUE, 
+                       Hmin = 0.1, 
+                       binwidth = 0.001, 
+                       Zoom = FALSE, 
+                       RightZoomFraction = 0.05, 
+                       titletext = NULL)
+
+# hist(outlier$results$pvaluesRightTail)
+# str(outlier)
+sum(outlier$results$qvalues<0.05, na.rm=TRUE) # found 2 outliers
+plot(outlier$results$He, outlier$results$FST, pch=20, col="grey")
+points(outlier$results$He[outlier$results$qvalues<0.01], outlier$results$FST[outlier$results$qvalues<0.01], pch=21, col="blue")
+
+View(outlier$result)
+    
+```

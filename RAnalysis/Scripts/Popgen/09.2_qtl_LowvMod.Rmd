@@ -1,0 +1,796 @@
+---
+title: "09_qtl_LowvMod"
+author: "Samuel Gurr"
+date: "2025-01-29"
+output: html_document
+---
+
+## Objective: 
+
+* to determine loci under selection and their heritability across generations - one method being QTL (quantitative trait locus) using packages such as lme4qtl. To run this analysis (scripts downstream from here) will will use the covariance matrix based on the relatedness (kinship) of our scallops. **In this script** will load the kinship matrix and vcf files to run qtl at each locus
+
+### set working directory
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# SET WORKING DIRECTORY 
+#knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+```
+
+
+### load libraries
+
+```{r, include=FALSE}
+library(tidyverse)
+library(lme4qtl)
+library(devtools)
+library(vcfR)
+library(lme4)
+```
+
+
+### Load and subset the vcf file with all SNPs
+
+* objective: to call different vcf file subsets to run pedigree and parentage analysis
+
+  - first lets see the calls to subset based on generation and life stage, below our master calls
+  
+  - **important** F0-12, F0-19, and F0-23 were sequenced but did not contribute to F1 offspring, omit
+  F0-12 is column 4
+  F0-19 is column 11
+  F0-23 is column 16
+  
+```{r list all IDs in the master vcf}
+
+# call th vcf file with all ids for the project 
+All.vcf <- vcfR::read.vcfR(here::here(getwd(),
+                            "RAnalysis", 
+                            "Data", 
+                            "Popgen", 
+                            "03_prune", 
+                            "out.7.phased.vcf.gz"), verbose = FALSE)
+
+All.ListIDs    <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+
+
+```
+
+```{r load kinsip matrix: Low v Moderate}
+
+# load it in
+LowvMod_kinship.df <- data.frame(
+                               read.csv(paste0(getwd(),
+                                               "/RAnalysis/Output/Popgen/pedigree/Kinship_matrix_low_v_moderate.csv")),
+                                         row.names=TRUE) 
+# notive the column names for some reason converted the - to ., convert back so 
+# the rows are the same as columns, need this format to related back to the vcf and lifehistory data
+rownames(LowvMod_kinship.df) <- gsub("\\.(F\\d+)\\.", "\\1-", rownames(LowvMod_kinship.df)) # 
+
+# convert to matrix
+LowvMod_kinship.mx           <- as.matrix(LowvMod_kinship.df)# convert to a matrix
+
+```
+
+## Build strata metadata 
+
+* long custom dplyr pipe based on the id name, all correct and good to go
+* assings genertaion and treatment, combine these as well for single factor if needed
+
+```{r strata metadata}
+
+# list ids for all individuals int he vcf file
+All.ListIDs  <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+
+# final metadata
+All.metadata <- as.data.frame(matrix(ncol = 1,
+                                     nrow = length(All.ListIDs))) %>% 
+                          mutate(id = All.ListIDs,
+                                 type = dplyr::case_when(grepl("-B", id) ~ "broodstock", TRUE ~ 'juvenile'),
+                                 gen = dplyr::case_when(grepl("F0", id) ~ "F0",
+                                                             grepl("F1", id) ~ "F1",
+                                                             grepl("F2", id) ~ "F2",
+                                                             grepl("F3", id) ~ "F3",
+                                                             TRUE ~ "F1"),
+                                 treatment = dplyr::case_when(
+                                        grepl("F0", id) ~ "none",
+                                        grepl("pH7\\.",id) ~ "High",
+                                        grepl(c("pH75\\.|.201.|.203.|.204.|.251.|.253.|.254.|.301.|.303.|.304.|.351.|.352.|.353.|.354."), id) ~
+                                        "Moderate",
+                                        grepl(c("pH8|.101.|.103.|.104.|.153.|.154.|.155.|.3.|.4.|.5."), id) ~ 
+                                        "Low")) %>% 
+                                dplyr::mutate(gen_treatment = 
+                                                dplyr::case_when(gen == "F0" ~ "F0",
+                                                                 gen %in% c("F1","F2","F3") ~
+                                                                   paste0(gen,'_',treatment))) %>% 
+                                select(-V1) 
+
+```
+
+
+# lme4qtl 
+
+
+### Prepare QTL: Low v Moderate (all generations)
+
+* prepare inputs, run checks to ensure data is balanced
+
+(1) covariance matrix (kinship) = LowvMod_kinship.mx
+  - ready to go as is, these ids need to be the ONLY ids in the following inputs #2 and 3
+(2) SNP matrix
+  - convert master vcf All.vcf to master genind
+  - convert master genind to master matrix 
+  - subset master matrix to target ids in the kinship covariance matrix
+(3) metadata
+  - subset master metadata to target ids in the kinship covariance matrix
+
+```{r Prep for QTL: Low v Moderate}
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# covariance matrix
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# head(LowvMod_kinship.mx) # use the ids to subet the next two datasets
+LowvMod_cov           <- Matrix::Matrix(LowvMod_kinship.mx, sparse = TRUE) # cov mx for lme4qtl
+# note: i dont know why by matrix doesnt lke th id, converts the hyphen to a period
+# i switch it back again below so that the ids match up, if we dont do this we get an error later
+colnames(LowvMod_cov) <- gsub("\\.(F\\d+)\\.", "\\1-", rownames(LowvMod_cov)) # colnames gotta match
+
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# SNP natrix
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# convert master vcf to master genind
+All.genind     <- All.vcf %>% vcfR::vcfR2genind()
+
+# convert master geneind to subset matrix based on ids in the cov kinship
+LowvMod_SNPs     <- tibble::rownames_to_column( # tibble wants to act on a df, move rownmaes to col
+                              (as.data.frame(as.matrix(All.genind))),# conversion genind - mx - df
+                              "id") %>% # call it id
+                  dplyr::filter(id %in% rownames(LowvMod_kinship.mx)) %>%  # filter id for those in kinship mx
+                  # lme4qtl family = binomial(link = "probit") only recognized 0,1 data 
+                  # the current file before the call before contains duplicate colnames as
+                  # '__.0' or '___.1' for loci, 0 being data as 2,1 and 1 being data as 0,1
+                  # so filter out all columns with the string '.1' to retain only loci described with 0,1 nomenclature
+                  dplyr::select(!matches("\\.0$"))
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# metadata
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+LowvMod_metadata <- All.metadata %>% 
+                          dplyr::filter(id %in% rownames(LowvMod_kinship.mx)) # filter id for those in kinship mx
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# SANITY CHECK - if the three datafiles hace the same amount of data
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+nrow(LowvMod_metadata) == nrow(LowvMod_kinship.mx) # TRUE
+
+nrow(LowvMod_SNPs) == nrow(LowvMod_kinship.mx) # TRUE
+
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# merge snp with metadata as master
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+LowvMod_master <- merge(LowvMod_metadata, LowvMod_SNPs, by = 'id')
+
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+#  order of cov matrix matches that of the master (merged snps with metadata above)
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# new 'master_reordered' for QTL 
+
+desired_order             <- rownames(LowvMod_cov)
+LowvMod_master_rownames   <- tibble::column_to_rownames(LowvMod_master, 'id')
+reorder_index             <- match(desired_order, rownames(LowvMod_master_rownames))
+LowvMod_master_reordered  <- LowvMod_master_rownames[reorder_index, ] %>% tibble::rownames_to_column('id')
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+# SANITY CHECK - does the order in fact match?
+# ::::::::::::::::::::::::::::::::::::::::::::::::::
+
+LowvMod_master_reordered$id == rownames(LowvMod_cov) #  all true
+LowvMod_master_reordered$id == colnames(LowvMod_cov) #  all true
+
+```
+
+
+### Run QTL: Low v Moderate (all generations)
+
+inputs: 
+- SNP data = LowvMod_SNP.mx
+- metadata = LowvMod_metadata
+- covariance matrix = LowvMod_kinship.mx
+
+model:
+
+- lme4qtl::relmatGlmer(<for loop locus by locus> ~ gen * treatment + (1|id), data = <merged loci with metadata>,
+                       relmat=list(id = <covariance kinship matrix>), 
+                       family = binomial(link = "probit"))
+                       
+- what does all this mean? 
+
+- how may one interpret the results?
+  * We are investigate the significant associations of loci with our independent variables
+  * generation effect *only* = suggest loci genetic drift in the laboratory, an artifact of prolonged captivity 
+  * treatment effect *only* = suggests an initial selection event at F1 and high heritability
+  * gen x treatment interaction(s) = suggest a variety of discussion points 
+  
+- Important! the following criteria are mandatory for binomial probit function to complete
+  * locus must be 0,1 - only two unique factors
+  * each strata (population group) must have at least one representative of 0,1, if not the model will throw an error
+
+* **Final preparations (reordering) and run a test!**
+
+```{r Run QTL: Low v Moderate}
+
+# Before moving forward... filter the data for the specific question in mind
+# below we are running qtl for all offspring in low and moderate from generations F1 - F3
+# the covariance matrix does not need to include the relatedness of the F0 for this, remove them
+
+# remove F0 from all data
+
+# cov kinship matrix: removed all occurance of string 'F0' from rows (r) and columns (c) 
+LowvMod_cov_rm_r  <- LowvMod_cov[!grepl("F0", rownames(LowvMod_cov)), , drop = FALSE]
+LowvMod_cov_rm_rc <- LowvMod_cov_rm_r[, !grepl("F0", colnames(LowvMod_cov_rm_r))]
+
+# snp data and metadata: omit columns that contain with 'F0' string 
+LowvMod_master_reordered_rm <- LowvMod_master_reordered %>% 
+                                  filter(!stringr::str_detect(id, "F0"))
+
+# check, F0 removed from all data
+
+LowvMod_master_reordered_rm$id == rownames(LowvMod_cov_rm_rc) #  all true
+LowvMod_master_reordered_rm$id == colnames(LowvMod_cov_rm_rc) #  all true
+
+# run a test on one snp
+
+m1 <- lme4qtl::relmatGlmer(CM084264_1_65408.1 ~ # SNP DV (must be 0 or 1)
+                            gen * treatment +# treatment ID
+                            (1|id), # random factor id
+                          LowvMod_master_reordered_rm, # data
+                          relmat=list(id = LowvMod_cov_rm_rc), # covariance matrix (id relatedness)
+                          family = binomial(link = "probit") # for binary SNP allele dat 
+                          )
+anova(m1) # does not get the p value
+summary(m1) # summary stats
+car::Anova(m1) # Kenward-Roger-corrected - I think this is ideal for us
+```
+
+* **Loop lmeqtl locus by locus**
+
+  - *Caution*: this takes a veerry long time, upwards of 24-36 hours
+  - If already run and output, *skip this chunk and read the previous output*
+  
+```{r Loop run QTL (all loci): Low v Moderate}
+
+# Call the cumulative dataframe that we will write to in the for loop below
+lme4qtl.output <- data.frame() # start dataframe 
+lme4qtl.loop   <- data.frame(matrix(nrow = 3, ncol = 6)) # create dataframe to save cumunalitively during for loop
+colnames(lme4qtl.loop) <- c('stat',
+                         'locus', 
+                         'effect',
+                         'df',
+                         'Fvalue',
+                         'pvalue') # names for comuns in the for loop
+
+# what column in 'LowvMod_master_reordered_rm' do SNPs begin metadata listed beforehand)?
+colnames(LowvMod_master_reordered_rm) # starts at column 6
+
+# now with in information known,  run lme4qtl for each locus
+for (i in 6:ncol(LowvMod_master_reordered_rm)) {
+  
+  LowvMod_master_reordered_rm[,6]
+  
+
+  if (length(unique(LowvMod_master_reordered_rm[,i])) == 3 | any(LowvMod_master_reordered_rm[,i] == 2) ) {
+  } # nada, if the locus has 3 unique integers or if there is a 2 (not just 0,1)
+  else { # run diagnostics!
+    # now run diagnostics and next if else call
+    # the lme4qtl model will not run if the group (pop) level
+    # contains all 1 or all 0, for example if all individuals from F1_Low are 0
+    
+    diagnostics <- LowvMod_master_reordered_rm %>% 
+                select(gen_treatment, i) %>% 
+                group_by(gen_treatment) %>% #%>% 
+                #summarise(total_sum = sum(i))
+                dplyr::summarise(
+                    n = n(),
+                    sum_zeros = sum(
+                       (dplyr::pick(.[[2]]) == 0)), # Count rows where value is 0
+                    sum_ones = sum(
+                       (dplyr::pick(.[[2]])  == 1))   # Count rows where value is 1
+                  )
+    
+    if (any(diagnostics$sum_zeros == 0) | any(diagnostics$sum_ones == 0)) {
+    } # nada, meaning that one of the group variables contained all 0 or all 1, lme4qtl wont run
+    else { # diagnostics passed, run lme4qtl!
+          
+          # run qtl
+          lme4qtl.run <- lme4qtl::relmatGlmer(LowvMod_master_reordered_rm[,i] ~
+                                          #LowvMod_master_reordered_rm[,i] ~ # SNP DV (must be 0 or 1)
+                                          gen * treatment +# treatment ID, both between subjsect, no slope needed
+                                          (1|id), # random factor id
+                                          LowvMod_master_reordered_rm, # data
+                                          relmat=list(id = LowvMod_cov_rm_rc), # covariance matrix (id relatedness)
+                                          family = binomial(link = "probit") # for binary SNP allele dat 
+                                  )
+          # get anova stats for the model
+          #mod.loop <- car::Anova(lme4qtl.run) # Kenward-Roger-corrected
+          mod.loop <- anova(lme4qtl.run)
+          # write out to 
+          lme4qtl.loop$stat[c(1:3)]       <- "lme4QTL, binomial probit"
+          lme4qtl.loop$locus[c(1:3)]      <- colnames(LowvMod_master_reordered_rm[i])
+          # gen
+          lme4qtl.loop$effect[1]          <- "generation"
+          lme4qtl.loop$df[1]              <- mod.loop$npar[1]
+          lme4qtl.loop$Fvalue[1]          <- mod.loop$`F value`[1] # gen 
+          lme4qtl.loop$pvalue[1]          <- stats::pf(mod.loop$`F value`[1], 
+                                                        mod.loop$npar[1], 
+                                                        271, 
+                                                        lower.tail = FALSE)          
+          # treatment
+          lme4qtl.loop$effect[2]          <- "treatment"
+          lme4qtl.loop$df[2]              <- mod.loop$npar[2]
+          lme4qtl.loop$Fvalue[2]          <- mod.loop$`F value`[2] # gen 
+          lme4qtl.loop$pvalue[2]          <- stats::pf(mod.loop$`F value`[2], 
+                                                        mod.loop$npar[2], 
+                                                        271, 
+                                                        lower.tail = FALSE)          
+          # gen * treatment
+          lme4qtl.loop$effect[3]          <- "generation * treatment"
+          lme4qtl.loop$df[3]              <- mod.loop$npar[3]
+          lme4qtl.loop$Fvalue[3]          <- mod.loop$`F value`[3] # gen 
+          lme4qtl.loop$pvalue[3]          <- stats::pf(mod.loop$`F value`[3], 
+                                                        mod.loop$npar[3], 
+                                                        271, 
+                                                        lower.tail = FALSE)
+          # cumulative output table
+          lme4qtl.output <- rbind(lme4qtl.output,lme4qtl.loop) #bind to a cumulative list dataframe
+          # print to keep track of it
+          # print(lme4qtl.loop) # print to monitor progress - tag out to quicken loop 
+    } # end of SECOND if else loop, run lme4qtl
+  } # end of FIRST if else loop, diagnostics
+} # end of for loop
+
+# check out the output!
+length(unique(lme4qtl.output$locus)) # 1768
+View(lme4qtl.output)
+# save output 
+write.csv(lme4qtl.output, "RAnalysis/Output/Popgen/qtl/LowvMod_QTL_raw.csv")
+```
+
+
+
+
+**Important** If you already ran the chunk above to output All_QTL_raw.csv, **read it in below instead of rerunning!**
+
+## **Loop lmeqtl locus by locus for THOSE THAT DID NOT RUN!**
+
+* gather new dataframe from 'All_master_reordered_rm' with just the SNPs that are not in 'lme4qtl.output'
+
+* test lme4qtl with probit to see whta the deal is all about 
+  - below we see that there are occurances of loci with 0,1 and 2 causing an error with binomial probit function 
+  - under biallelic assumption, combinte the alternate allelic, be them heterozygous, 1, or homozygous, 2, is approporate
+
+* run the loop above with a couple important changes
+  - input being *only* the snps that failed in the previous (sue to non biallelic loci)
+  - column by column in the for loop, edit the loci converting '2' to '1', merging alternate alleles
+  - then run! 
+  
+  
+```{r lme4qtl run with nerged alt SNPs}
+
+# read in 
+lme4qtl.output <- read.csv("RAnalysis/Output/Popgen/qtl/LowvMod_QTL_raw.csv")
+
+# gather new dataframe from 'All_master_reordered_rm' with just the SNPs that are not in 'lme4qtl.output'
+
+LowvMod_master_altalleles <- LowvMod_master_reordered_rm %>% dplyr::select(!unique(lme4qtl.output$locus))
+
+
+# test lme4qtl with probit to see whta the deal is all about 
+# why did these loci fail in this model?
+lme4qtl::relmatGlmer(LowvMod_master_altalleles[,6] ~ # col 6 is the first column with a locus
+                     gen * treatment +# treatment ID, both between subjsect, no slope needed
+                     (1|id), # random factor id
+                     LowvMod_master_altalleles, # data
+                     relmat=list(id = LowvMod_cov_rm_rc), # covariance matrix (id relatedness)
+                     family = binomial(link = "probit") # for binary SNP allele dat 
+                                  )
+# Error: Error in eval(family$initialize, rho) : y values must be 0 <= y <= 1
+unique(LowvMod_master_altalleles[,6]) # theres a 2 in there! thats why!
+# 0 typically represents a homozygous reference genotype (0/0)
+# 1 usually indicates a heterozygous genotype (0/1 or 1/0)
+# 2 generally denotes a homozygous alternate genotype (1/1)
+
+# Note there are several assumptions and one shold adress the question at hand 
+# in a given study before proceesing 
+# to group genotypes
+
+# Biallelic assumption - QTL analysis assumes a bialleleic model 
+# where only two alleic states are possible at a given locus, in this case combineing these may be appropriate 
+# combining genotypes can also improve power to detect weak WTLs and narrow suppor for QTL regions
+
+
+
+# Loop again with the new input, also merge the alternate alleles! 
+
+# Call the cumulative dataframe that we will write to in the for loop below
+lme4qtl.mergedalleles.output <- data.frame() # start dataframe 
+lme4qtl.loop                 <- data.frame(matrix(nrow = 3, ncol = 6)) # create dataframe to save cumunalitively during for loop
+colnames(lme4qtl.loop) <- c('stat',
+                         'locus', 
+                         'effect',
+                         'df',
+                         'Fvalue',
+                         'pvalue') # names for comuns in the for loop
+
+# now with in information known,  run lme4qtl for each locus
+for (i in 6:ncol(LowvMod_master_altalleles)) {
+  
+  # all (or most) loci in this dataframe not biallelic, containing 0,1, and 2
+  LowvMod_master_altalleles <- LowvMod_master_altalleles %>% mutate(targetlocus = case_when(.[[i]] == 2 ~ 1, TRUE ~ .[[i]]))
+
+  
+  diagnostics <- LowvMod_master_altalleles %>% 
+                select(gen_treatment, targetlocus) %>% 
+                group_by(gen_treatment) %>% #%>% 
+                #summarise(total_sum = sum(i))
+                dplyr::summarise(
+                    n = n(),
+                    sum_zeros = sum(
+                       (dplyr::pick(.[[2]]) == 0)), # Count rows where value is 0
+                    sum_ones = sum(
+                       (dplyr::pick(.[[2]])  == 1))   # Count rows where value is 1
+                  )
+    
+    if (any(diagnostics$sum_zeros == 0) | any(diagnostics$sum_ones == 0)) {
+    } # nada, meaning that one of the group variables contained all 0 or all 1, lme4qtl wont run
+    else { # diagnostics passed, run lme4qtl!
+          
+          # run qtl
+          lme4qtl.run <- lme4qtl::relmatGlmer(LowvMod_master_altalleles$targetlocus ~
+                                          #All_master_reordered_rm[,i] ~ # SNP DV (must be 0 or 1)
+                                          gen * treatment +# treatment ID, both between subjsect, no slope needed
+                                          (1|id), # random factor id
+                                          LowvMod_master_altalleles, # data
+                                          relmat=list(id = LowvMod_cov_rm_rc), # covariance matrix (id relatedness)
+                                          family = binomial(link = "probit") # for binary SNP allele dat 
+                                  )
+          # get anova stats for the model
+          #mod.loop <- car::Anova(lme4qtl.run) # Kenward-Roger-corrected
+          mod.loop <- anova(lme4qtl.run)
+          # write out to 
+          lme4qtl.loop$stat[c(1:3)]       <- "lme4QTL, binomial probit"
+          lme4qtl.loop$locus[c(1:3)]      <- colnames(LowvMod_master_altalleles[i])
+          # gen
+          lme4qtl.loop$effect[1]          <- "generation"
+          lme4qtl.loop$df[1]              <- mod.loop$npar[1]
+          lme4qtl.loop$Fvalue[1]          <- mod.loop$`F value`[1] # gen 
+          lme4qtl.loop$pvalue[1]          <- stats::pf(mod.loop$`F value`[1], 
+                                                        mod.loop$npar[1], 
+                                                        271, 
+                                                        lower.tail = FALSE)          
+          # treatment
+          lme4qtl.loop$effect[2]          <- "treatment"
+          lme4qtl.loop$df[2]              <- mod.loop$npar[2]
+          lme4qtl.loop$Fvalue[2]          <- mod.loop$`F value`[2] # gen 
+          lme4qtl.loop$pvalue[2]          <- stats::pf(mod.loop$`F value`[2], 
+                                                        mod.loop$npar[2], 
+                                                        271, 
+                                                        lower.tail = FALSE)          
+          # gen * treatment
+          lme4qtl.loop$effect[3]          <- "generation * treatment"
+          lme4qtl.loop$df[3]              <- mod.loop$npar[3]
+          lme4qtl.loop$Fvalue[3]          <- mod.loop$`F value`[3] # gen 
+          lme4qtl.loop$pvalue[3]          <- stats::pf(mod.loop$`F value`[3], 
+                                                        mod.loop$npar[3], 
+                                                        271, 
+                                                        lower.tail = FALSE)
+          # cumulative output table
+          lme4qtl.mergedalleles.output <- rbind(lme4qtl.mergedalleles.output,lme4qtl.loop) #bind to a cumulative list dataframe
+          # print to keep track of it
+          # print(lme4qtl.loop) # print to monitor progress - tag out to quicken loop 
+    } # end of First if else loop, run lme4qtl
+} # end of for loop
+
+# check out the output!
+length(unique(lme4qtl.mergedalleles.output$locus)) # 945 successfully run
+View(lme4qtl.mergedalleles.output)
+# save output 
+# save output 
+write.csv(lme4qtl.mergedalleles.output, "RAnalysis/Output/Popgen/qtl/LowvMod_QTL_raw_merged_altalleles.csv")
+
+```
+
+* **Read qtl_raw and correct for multiple tests**
+
+  - in short, we ran a ton of tests. One method to correct is to order from low to high pvalue and conduct a stepwise Bonferroni
+  
+```{r Edit  raw output QTL: Correct for multiple tests}
+
+raw_qtl.df    <- read.csv("RAnalysis/Output/Popgen/qtl/LowvMod_QTL_raw.csv", sep = ",", head = T) %>% 
+                                select(!X)
+raw_merged_altalleles_qtl.df <- read.csv("RAnalysis/Output/Popgen/qtl/LowvMod_QTL_raw_merged_altalleles.csv", sep = ",", head = T) %>%
+                                      select(!X)
+
+raw_qtl_master.df <- rbind(raw_qtl.df, raw_merged_altalleles_qtl.df)
+raw_qtl_master.df <- raw_qtl_master.df %>% distinct() %>%  # omit duplicates, oopsy, added to cumulative file twice..
+                             mutate(chromosome = gsub("^(CM\\d+).*", "\\1", locus),
+                                    position   = as.numeric(gsub(".*_(\\d+)\\.\\d+$", "\\1", locus))) %>% 
+                             mutate(chrom_num = 
+                                      case_when(chromosome  %in% 'CM084264' ~1, 
+                                                chromosome  %in% 'CM084265' ~2,
+                                                chromosome  %in% 'CM084266' ~3,
+                                                chromosome  %in% 'CM084267' ~4,
+                                                chromosome  %in% 'CM084268' ~5,
+                                                chromosome  %in% 'CM084269' ~6,
+                                                chromosome  %in% 'CM084270' ~7,
+                                                chromosome  %in% 'CM084271' ~8,
+                                                chromosome  %in% 'CM084272' ~9,
+                                                chromosome  %in% 'CM084273' ~10,
+                                                chromosome  %in% 'CM084274' ~11,
+                                                chromosome  %in% 'CM084275' ~12,
+                                                chromosome  %in% 'CM084276' ~13,
+                                                chromosome  %in% 'CM084277' ~14,
+                                                chromosome  %in% 'CM084278' ~15,
+                                                chromosome  %in% 'CM084279' ~16))
+length(unique(raw_qtl_master.df$locus)) # 2713
+
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Bonferronni correction 
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# FIrst we need to prepare the dataframe by listing the models (loci) that had the lowest to highest p value 
+# tricky here because there are three pvlaues in each model so we can not just sort it, below is a work around 
+# in which we pull the minimum pvalue for each model and use that as the template to order
+
+# why do we need to do this? 
+# for stepwise bonferronni we need an adjusted denominator # for the cumulative tests run
+# whereas the normal bonferroni correct by dividing pvalues by the sum of all tests (1,768 in our case!)
+# this will simply make every model non significant. A less conservative method to truncate multiple tests for those 
+# most significant is to list the models from low to high and divide p values according to this new order of tests
+# example: model with the lowest pvales are adjust y dividing by 1, the next lowest by 2 and so on...
+
+
+# Step 1: Sort values within each category (pvalues low to high in each locus)
+loci_sorted <- raw_qtl_master.df[order(raw_qtl_master.df$locus, raw_qtl_master.df$pvalue),]
+
+# Step 2: Find the minimum value for each category (now call the mlowest p values in each locus)
+loci_min <- aggregate(pvalue ~ locus, data = raw_qtl_master.df, FUN = min)
+
+# Step 3: Order categories based on their minimum values (order the locus from low to high, this is the order for our final df)
+# make adataframe adding the column 'rank' from 1 to length loci_order and rename loci_order to locus to merge in the next step
+loci_order    <- loci_min$locus[order(loci_min$pvalue)]
+loci_order.df <- as.data.frame(loci_order) %>% mutate(rank = row_number()) %>% rename(locus = loci_order)
+# Step 4: Reorder the dataframe based on the category order (using the order above, reorder the sorted dataframe)
+# a little more complex here, reorder the dataframe usingloci_order.df$locus, and merge with it to get 'rank' column
+# then arrange by rank column
+raw_qtl.df.sorted <- merge(
+                           loci_sorted[order(match(loci_sorted$locus, loci_order.df$locus)),],
+                           loci_order.df,
+                           by = 'locus'
+                           ) %>% 
+                     arrange(rank)
+                           
+# Now we can simply add a new column with the stewise bonferroni corection
+Bonferroni_qtl.df <- raw_qtl.df.sorted %>% 
+                            mutate(
+                                   # bonferroni adjusted p value for what is deemed significant
+                                   adj_bonferroni = 0.05 / rank) %>% 
+                            mutate(
+                                   # boolean for significant cases
+                                   sig_boolean = case_when(pvalue < adj_bonferroni ~ 'TRUE', TRUE ~ 'FALSE')
+                                   ) %>% 
+                            select(chromosome, chrom_num, position, locus, effect, df, Fvalue, pvalue,rank, adj_bonferroni, sig_boolean)
+                                   
+
+
+# save output 
+write.csv(Bonferroni_qtl.df, "RAnalysis/Output/Popgen/qtl/LowvMod_QTL_bonferroni.csv")
+
+```
+
+
+```{r}
+# laod bonferroni adjusted lme4qtl output
+Bonferroni_qtl.df     <- read.csv("RAnalysis/Output/Popgen/qtl/LowvMod_QTL_bonferroni.csv", sep = ",", head = T) %>% select(!X)
+
+# truncate the data to only significant effects
+significant_loci.df   <- Bonferroni_qtl.df %>% dplyr::filter(sig_boolean %in% 'TRUE')
+
+# Now with this file above... 
+# we want to view three sets of loci 
+# (1) Complex: those with generation * treatment interaction 
+# (2) Captivity effect: those with ONLY a generation effect (no treatment and no gen * treatment effect)
+# (3) Bottleneck effect: those with ONLY an effect of OA treatment induced  by selective mortality 
+# when embryos were first exposed to low and moderate OA, resulting in genetic differences 
+
+
+# (1) Complex: generation x treatment interactions
+loci_complex.df    <- significant_loci.df %>% dplyr::filter(effect %in% 'generation * treatment')
+nrow(loci_complex.df) # 9 (6 without the second run of merged alt alleles)
+
+
+
+# (2) Captivity: only a generation effect
+# first lest get the loci names for treament effects as well
+# treatment main effect
+loci_treatment.df  <- significant_loci.df %>% dplyr::filter(effect %in% 'treatment')
+# generation main effect
+loci_generation.df  <- significant_loci.df %>% dplyr::filter(effect %in% 'generation')
+
+# now we can truncate for both the interaction and treamtent effects 
+loci_captivity.df  <- significant_loci.df %>% filter(!(locus %in% loci_complex.df$locus | # gen * treatment, remove all loci
+                                                          locus %in% loci_treatment.df$locus)) # treament, remove all loci
+nrow(loci_captivity.df) # 41 (25 without the second run of merged alt alleles)
+
+
+
+# (3) Selective mortatlity (Bottleneck) effect: treatment only suggest that the initial F1 exposure truncated the population to these heritable loci
+loci_bottleneck.df <- significant_loci.df %>% filter(!(locus %in% loci_complex.df$locus | # gen * treatment, remove all loci
+                                                          locus %in% loci_generation.df$locus)) # gen only, remove all loci
+# 16 (10 without the second run of merged alt alleles)
+
+# save output 
+write.csv(loci_complex.df, "RAnalysis/Output/Popgen/qtl/LowvMod_QTL_bonferroni_genXtreatment.csv")
+write.csv(loci_captivity.df, "RAnalysis/Output/Popgen/qtl/LowvMod_QTL_bonferroni_gen_only.csv")
+write.csv(loci_bottleneck.df, "RAnalysis/Output/Popgen/qtl/LowvMod_QTL_bonferroni_treatment_only.csv")
+
+```
+
+
+### Manhattan plot
+
+**gff**
+
+- read reference gene function file (gff), rename chromosome accession ids to match
+- receive the putative protein name for each fo the significant loci from lme4qtl 
+
+```{r read reference gff file and rename accession ids to match}
+
+# gff <- read.table("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff", sep="\t", quote="")
+exon.df <- ape::read.gff("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff") %>% 
+            dplyr::filter(type %in% 'mRNA') %>%  # to mimix the example 
+            dplyr::filter(!grepl("NW_",seqid)) %>% 
+            dplyr::mutate(attributes = paste0('NAME=',(gsub('.*;product=', '', attributes))),
+                          chromosome = case_when(seqid %in% 'NC_091134.1' ~ 'CM084264',
+                                            seqid %in% 'NC_091135.1' ~ 'CM084265',
+                                            seqid %in% 'NC_091136.1' ~ 'CM084266',
+                                            seqid %in% 'NC_091137.1' ~ 'CM084267',
+                                            seqid %in% 'NC_091138.1' ~ 'CM084268',
+                                            seqid %in% 'NC_091139.1' ~ 'CM084269',
+                                            seqid %in% 'NC_091140.1' ~ 'CM084270',
+                                            seqid %in% 'NC_091141.1' ~ 'CM084271',
+                                            seqid %in% 'NC_091142.1' ~ 'CM084272',
+                                            seqid %in% 'NC_091143.1' ~ 'CM084273',
+                                            seqid %in% 'NC_091144.1' ~ 'CM084274',
+                                            seqid %in% 'NC_091145.1' ~ 'CM084275',
+                                            seqid %in% 'NC_091146.1' ~ 'CM084276',
+                                            seqid %in% 'NC_091147.1' ~ 'CM084277',
+                                            seqid %in% 'NC_091148.1' ~ 'CM084278',
+                                            seqid %in% 'NC_091149.1' ~ 'CM084279'),
+                          chrom_num = case_when(chromosome  %in% 'CM084264' ~1, 
+                                                chromosome  %in% 'CM084265' ~2,
+                                                chromosome  %in% 'CM084266' ~3,
+                                                chromosome  %in% 'CM084267' ~4,
+                                                chromosome  %in% 'CM084268' ~5,
+                                                chromosome  %in% 'CM084269' ~6,
+                                                chromosome  %in% 'CM084270' ~7,
+                                                chromosome  %in% 'CM084271' ~8,
+                                                chromosome  %in% 'CM084272' ~9,
+                                                chromosome  %in% 'CM084273' ~10,
+                                                chromosome  %in% 'CM084274' ~11,
+                                                chromosome  %in% 'CM084275' ~12,
+                                                chromosome  %in% 'CM084276' ~13,
+                                                chromosome  %in% 'CM084277' ~14,
+                                                chromosome  %in% 'CM084278' ~15,
+                                                chromosome  %in% 'CM084279' ~16),
+                          transcript_id = gsub('.*transcript_id=', '', attributes),
+                          protein_id =gsub(".*NAME=(.+);.*", "\\1", attributes)) %>% 
+          # dplyr::rename(chromosme = seqid) %>% 
+          dplyr::select(chromosome, chrom_num, start, end, transcript_id, protein_id)
+unique(gff$seqid) # good, the 16 chromosomes
+
+View(gff)
+
+
+exon.df %>% 
+  left_join(loci_complex.df, by = c("chromosome","chrom_num")) %>% 
+  # filter(position >= start & position <= end) %>% # exact position
+  filter(position >= start-2000 & position <= end+2000) %>% 
+  select(chromosome, chrom_num, position, locus, protein_id, start, end)
+
+exon.df %>% 
+  left_join(loci_bottleneck.df, by = c("chromosome","chrom_num")) %>% 
+  # filter(position >= start & position <= end) %>% # exact position
+  filter(position >= start-2000 & position <= end+2000) %>% 
+  select(chromosome, chrom_num, position, locus, protein_id, start, end)
+
+
+exon.df %>% 
+  left_join(loci_captivity.df, by = c("chromosome","chrom_num")) %>% 
+  filter(position >= start & position <= end) %>% # exact position
+  # filter(position >= start-2000 & position <= end+2000) %>% 
+  select(chromosome, chrom_num, position, locus, protein_id, start, end) %>%  distinct()
+```
+
+```{r Manhattan plots}
+
+View(Bonferroni_qtl.df)
+test <- Bonferroni_qtl.df %>% 
+                             dplyr::filter(effect %in% 'generation * treatment') %>% 
+                             mutate(chromosome = gsub("^(CM\\d+).*", "\\1", locus),
+                                    position   = as.numeric(gsub(".*_(\\d+)\\.\\d+$", "\\1", locus))) %>% 
+                             mutate(chrom_num = 
+                                      case_when(chromosome  %in% 'CM084264' ~1, 
+                                                chromosome  %in% 'CM084265' ~2,
+                                                chromosome  %in% 'CM084266' ~3,
+                                                chromosome  %in% 'CM084267' ~4,
+                                                chromosome  %in% 'CM084268' ~5,
+                                                chromosome  %in% 'CM084269' ~6,
+                                                chromosome  %in% 'CM084270' ~7,
+                                                chromosome  %in% 'CM084271' ~8,
+                                                chromosome  %in% 'CM084272' ~9,
+                                                chromosome  %in% 'CM084273' ~10,
+                                                chromosome  %in% 'CM084274' ~11,
+                                                chromosome  %in% 'CM084275' ~12,
+                                                chromosome  %in% 'CM084276' ~13,
+                                                chromosome  %in% 'CM084277' ~14,
+                                                chromosome  %in% 'CM084278' ~15,
+                                                chromosome  %in% 'CM084279' ~16))
+
+
+
+library(ggplot2)
+
+
+
+
+# Sample data (replace with your data)
+
+data <- data.frame(
+
+  Chromosome = c(rep("chr1", 100), rep("chr2", 150), rep("chr3", 200)), 
+
+  Position = c(seq(1, 100, by = 1), seq(1, 150, by = 1), seq(1, 200, by = 1)), 
+
+  pvalue = runif(450, 0, 1)
+
+)
+
+
+
+# Calculate cumulative position
+
+data <- test %>% 
+
+  group_by(chrom_num) %>%
+
+  mutate(cum_pos = position + lag(cumsum(position)), default = 0) %>% 
+
+  ungroup()
+
+
+
+# Create the Manhattan plot
+
+ggplot(data, aes(x = position, y = -log10(pvalue), shape = sig_boolean, color = sig_boolean)) + 
+
+  geom_point() + 
+
+  scale_color_manual(values =  c("grey70", "grey20")) + 
+  
+  scale_shape_manual(values =  c(21,19)) +
+
+  facet_grid(~ chrom_num, scales = "free_x", space = "free") + 
+
+  theme_classic() + 
+
+  labs(x = "Genomic Position", y = "-log10(P-value)") 
+
+```

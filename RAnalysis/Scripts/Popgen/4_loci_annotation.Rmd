@@ -1,0 +1,194 @@
+---
+title: "04_loci_annotation"
+author: "Samuel Gurr"
+date: "2025-03-07"
+output: html_document
+---
+
+## Objective: 
+
+* load the outputs from lme4qtl and merge with annotation (chromosome number, protein name, etc.)
+
+### set working directory
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# SET WORKING DIRECTORY 
+knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+#knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+```
+
+
+### load libraries
+
+```{r, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(tidyverse)
+library(vcfR)
+library(adegenet)
+library(hierfstat)
+library(poppr)
+library(reshape2)
+library(ggplot2)
+library(RColorBrewer)
+library(scales)
+```
+
+### load vcf file and convert to dataframe
+
+*   master 'All' vcf file, meaning all individuals sequenced for the experiment
+* a bit of a runaround to get there, first make genind object then you can convert it
+
+```{r load master vcf file convert to dataframe}
+
+# load in vxf file
+All_SNPs.vcf <- vcfR::read.vcfR(here::here(getwd(),
+                            "RAnalysis", 
+                            "Data", 
+                            "Popgen", 
+                            "03_prune", 
+                            "out.7.phased.vcf.gz"), verbose = FALSE)
+
+
+All_SNPs_chrom_pos <- data.frame(All_SNPs.vcf@fix[,1], All_SNPs.vcf@fix[,2]) 
+colnames(All_SNPs_chrom_pos) <- c('chromosome' ,'position')
+
+All_SNPs.df <- All_SNPs_chrom_pos %>% mutate(chromosome = gsub("^(CM\\d+).*", "\\1", chromosome), 
+                                             chrom_num = case_when(chromosome  %in% 'CM084264' ~1, 
+                                                                  chromosome  %in% 'CM084265' ~2,
+                                                                  chromosome  %in% 'CM084266' ~3,
+                                                                  chromosome  %in% 'CM084267' ~4,
+                                                                  chromosome  %in% 'CM084268' ~5,
+                                                                  chromosome  %in% 'CM084269' ~6,
+                                                                  chromosome  %in% 'CM084270' ~7,
+                                                                  chromosome  %in% 'CM084271' ~8,
+                                                                  chromosome  %in% 'CM084272' ~9,
+                                                                  chromosome  %in% 'CM084273' ~10,
+                                                                  chromosome  %in% 'CM084274' ~11,
+                                                                  chromosome  %in% 'CM084275' ~12,
+                                                                  chromosome  %in% 'CM084276' ~13,
+                                                                  chromosome  %in% 'CM084277' ~14,
+                                                                  chromosome  %in% 'CM084278' ~15,
+                                                                  chromosome  %in% 'CM084279' ~16),
+                                             position = as.numeric(position),
+                                             locus = paste0(chromosome,'_',position))
+```
+
+
+### Load gff, edit columns to match
+
+-   read reference gene function file (gff), rename chromosome accession ids to match
+- target coding region exon
+
+```{r read reference gff file and rename accession ids to match}
+
+# gff <- read.table("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff", sep="\t", quote="")
+exon.df <- ape::read.gff("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff") %>% 
+            dplyr::filter(type %in% 'mRNA') %>%  # contains protein name, contains all exons
+            dplyr::filter(!grepl("NW_",seqid)) %>% 
+            dplyr::mutate(attributes = paste0('NAME=',(gsub('.*;product=', '', attributes))),
+                          chromosome = case_when(seqid %in% 'NC_091134.1' ~ 'CM084264',
+                                            seqid %in% 'NC_091135.1' ~ 'CM084265',
+                                            seqid %in% 'NC_091136.1' ~ 'CM084266',
+                                            seqid %in% 'NC_091137.1' ~ 'CM084267',
+                                            seqid %in% 'NC_091138.1' ~ 'CM084268',
+                                            seqid %in% 'NC_091139.1' ~ 'CM084269',
+                                            seqid %in% 'NC_091140.1' ~ 'CM084270',
+                                            seqid %in% 'NC_091141.1' ~ 'CM084271',
+                                            seqid %in% 'NC_091142.1' ~ 'CM084272',
+                                            seqid %in% 'NC_091143.1' ~ 'CM084273',
+                                            seqid %in% 'NC_091144.1' ~ 'CM084274',
+                                            seqid %in% 'NC_091145.1' ~ 'CM084275',
+                                            seqid %in% 'NC_091146.1' ~ 'CM084276',
+                                            seqid %in% 'NC_091147.1' ~ 'CM084277',
+                                            seqid %in% 'NC_091148.1' ~ 'CM084278',
+                                            seqid %in% 'NC_091149.1' ~ 'CM084279'),
+                          chrom_num = case_when(chromosome  %in% 'CM084264' ~1, 
+                                                chromosome  %in% 'CM084265' ~2,
+                                                chromosome  %in% 'CM084266' ~3,
+                                                chromosome  %in% 'CM084267' ~4,
+                                                chromosome  %in% 'CM084268' ~5,
+                                                chromosome  %in% 'CM084269' ~6,
+                                                chromosome  %in% 'CM084270' ~7,
+                                                chromosome  %in% 'CM084271' ~8,
+                                                chromosome  %in% 'CM084272' ~9,
+                                                chromosome  %in% 'CM084273' ~10,
+                                                chromosome  %in% 'CM084274' ~11,
+                                                chromosome  %in% 'CM084275' ~12,
+                                                chromosome  %in% 'CM084276' ~13,
+                                                chromosome  %in% 'CM084277' ~14,
+                                                chromosome  %in% 'CM084278' ~15,
+                                                chromosome  %in% 'CM084279' ~16),
+                          transcript_id = gsub('.*transcript_id=', '', attributes),
+                          protein_id =gsub(".*NAME=(.+);.*", "\\1", attributes)) %>% 
+          # dplyr::rename(chromosme = seqid) %>% 
+          dplyr::select(chromosome, chrom_num, start, end, transcript_id, protein_id)
+unique(exon.df$chrom_num) # good, the 16 chromosomes
+
+
+```
+
+### Overlay gff with SNPs
+
+* filter for cases when the loci is within biologically relvant distnce of 100 bp from a given mRNA start and stop
+
+* if inside coding region, output exon for location and distance_bp = 0,
+if outside of the nearest coding region, output intron (non-coding region) for location and distance_bp as the position from start or end
+
+```{r merge qtl loci with annotation}
+
+
+All_SNPs.df.annotated <- exon.df %>% 
+                                  left_join(All_SNPs.df, by = c("chromosome","chrom_num")) %>% 
+                                  # filter(position >= start & position <= end) %>% # exact position
+                                  # group_by(locus) %>% 
+                                  filter( (position >= (start-100)) & (position <= (end+100)) ) %>% # within 100 bp of nearest exon
+                                  mutate(up_downstream = case_when(
+                                                                  position < start ~ 'upstream',
+                                                                  position > end ~ 'downstream',
+                                                                  TRUE ~ 'exon'),
+                                         distance_bp = case_when(
+                                                              up_downstream %in% 'upstream' ~ start - position, 
+                                                              up_downstream %in% 'downstream' ~ position - end, 
+                                                              TRUE ~ 0),
+                                         location = case_when((position >= start & position <= end) ~ 'exon',
+                                                               TRUE ~ 'intron')) %>% 
+                                  select(locus, chrom_num, position, location, distance_bp,  protein_id, start, end)
+View(All_SNPs.df.annotated)
+View(data.frame(unique(All_SNPs.df.annotated$protein_id)))
+# write.csv(all_qtl_interaction.annotated, "RAnalysis/Output/Popgen/qtl/All_QTL_genXtreatment_annotated.csv")
+# unique(all_qtl_interaction$locus)
+# unique(all_qtl_interaction.annotated$locus)
+# 5 of 13 loci containing significant interaction with generation x treatment, also mapped to an exon (coding region)
+
+
+
+```
+
+### assess the number of loci associated with unigenes (unique exon regions)
+
+* summary: 
+  - 2947 total loci (we know this)
+  - 1572 as exon - 47%
+  - 1 as intron (within 100 bp of start site, 'cuncharacterized protein')
+  
+```{r stats}
+
+# total loci
+nrow(All_SNPs.df) # 2947 
+
+# number of SNPs indicated as 'exon' within start and stop regions
+nrow(All_SNPs.df.annotated %>% 
+       dplyr::filter(location %in% 'exon')) # 1572
+
+# number of SNPs indicated as 'intron' within start and stop regions
+nrow(All_SNPs.df.annotated %>% 
+       dplyr::filter(location %in% 'intron')) # 1
+All_SNPs.df.annotated %>% dplyr::filter(location %in% 'intron') # look at it, located wihtin 100 bp of the start site
+
+
+# percent in exon region
+((2947-1572)/2947)*100 # 46.7% - 47%
+```
+

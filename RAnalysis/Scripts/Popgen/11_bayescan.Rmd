@@ -1,0 +1,211 @@
+---
+title: "10_bayescan"
+author: "Samuel Gurr"
+date: "2025-01-29"
+output: html_document
+---
+
+## Objective: 
+
+* 
+
+### set working directory
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# SET WORKING DIRECTORY 
+knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+#knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+```
+
+### load libraries
+
+```{r, include=FALSE}
+library(tidyverse)
+library(radiator)
+library(PopGenome) # devtools::install_github("pievos101/PopGenome")
+library(vcfR)
+```
+
+# PREPARE INPUTS TO BAYESCAN
+
+### Load and subset the vcf file with all SNPs
+
+* objective: to call different vcf file subsets to run pedigree and parentage analysis
+
+  - first lets see the calls to subset based on generation and life stage, below our master calls
+  
+  - **important** F0-12, F0-19, and F0-23 were sequenced but did not contribute to F1 offspring, omit
+  F0-12 is column 4
+  F0-19 is column 11
+  F0-23 is column 16
+  
+```{r load and subset the target vcf files}
+
+# call th vcf file with all ids for the project 
+All.vcf <- vcfR::read.vcfR(here::here(getwd(),
+                            "RAnalysis", 
+                            "Data", 
+                            "Popgen", 
+                            "03_prune", 
+                            "out.7.phased.vcf.gz"), verbose = FALSE)
+
+All_LOW_MOD_HIGH.vcf <- All.vcf[,c(1:3, 5:10, 12:15, 17:139:392)]
+
+All_LOW_MOD.vcf      <- All.vcf[,c(1:3, 5:10, 12:15, 17:139, # F0 and all F1 offspring
+                                  153:163, 198:218, # F2 offspring from low OA
+                                  164:177, 219:250, # F2 offspring from moderate OA
+                                  295:343, # F3 offspring from low OA
+                                  344:392)] # F3 offspring from moderate OA
+
+
+```
+
+```{r list of all ids}
+All.ListIDs    <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+```
+
+## Strata metadata based on the individual IDs
+
+* build the strata
+* subset for the vcf matrices (if needed)
+
+```{r strata metadata}
+
+# list ids for all individuals int he vcf file
+All.ListIDs  <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+
+# master metadata
+All.metadata <- as.data.frame(matrix(ncol = 1,
+                                     nrow = length(All.ListIDs))) %>% 
+                          mutate(id = All.ListIDs,
+                                 type = dplyr::case_when(grepl("-B", id) ~ "broodstock", TRUE ~ 'juvenile'),
+                                 gen = dplyr::case_when(grepl("F0", id) ~ "F0",
+                                                             grepl("F1", id) ~ "F1",
+                                                             grepl("F2", id) ~ "F2",
+                                                             grepl("F3", id) ~ "F3",
+                                                             TRUE ~ "F1"),
+                                 treatment = dplyr::case_when(
+                                        grepl("F0", id) ~ "none",
+                                        grepl("pH7\\.",id) ~ "High",
+                                        grepl(c("pH75\\.|.201.|.203.|.204.|.251.|.253.|.254.|.301.|.303.|.304.|.351.|.352.|.353.|.354."), id) ~
+                                        "Moderate",
+                                        grepl(c("pH8|.101.|.103.|.104.|.153.|.154.|.155.|.3.|.4.|.5."), id) ~ 
+                                        "Low")) %>% 
+                                dplyr::mutate(gen_treatment = 
+                                                dplyr::case_when(gen == "F0" ~ "F0",
+                                                                 gen %in% c("F1","F2","F3") ~ paste0(gen,'_',treatment))) %>% 
+                                select(-V1) 
+
+# subset for the vcf matrices, we already have it for 'All'
+All_LOW_MOD.metadata <- All.metadata %>% 
+  dplyr::filter(id %in% colnames(All_LOW_MOD.vcf@gt[,2:length(colnames(All_LOW_MOD.vcf@gt))]))
+
+All_LOW_MOD_HIGH.metadata <- All.metadata %>% 
+  dplyr::filter(id %in% colnames(All_LOW_MOD_HIGH.vcf@gt[,2:length(colnames(All_LOW_MOD_HIGH.vcf@gt))]))
+
+```
+
+```{r geneinds}
+# F0 thorugh F3 low and moderate only! :::::::::::::::::::::::::::::::
+All_LOW_MOD.gen  <- All_LOW_MOD.vcf %>% vcfR2genind() 
+```
+
+```{r tidy_genomic_data format}
+All_LOW_MOD.tidy <- radiator::tidy_genomic_data(All_LOW_MOD.gen, 
+                                                strata = 
+                                                    (All_LOW_MOD.metadata %>% 
+                                                       select(id, gen_treatment) %>% 
+                                                       rename(INDIVIDUALS = id,
+                                                              STRATA = gen_treatment))
+                                                     )
+```
+
+```{r write bayescan}
+radiator::write_bayescan(dat = All_LOW_MOD.tidy, filename  = "All_LOW_MOD")
+?radiator::write_bayescan
+```
+
+# Run Bayescan
+ 
+* use the bayescan 2.0 GUI to call the txt file output from the chunk above (write_bayescan)
+* plot using ```plot_bayescan```
+```{r run bayescan and plot}
+# Below does not work properly, instead run using the GUI, this takes about 6 hours! 
+
+# ?radiator::run_bayescan
+# radiator::run_bayescan(
+#   "All_LOW_MOD",
+#   n = 5000,
+#   thin = 10,
+#   nbp = 20,
+#   pilot = 5000,
+#   burn = 50000,
+#   pr_odds = 10,
+#   subsample = NULL,
+#   iteration.subsample = 10,
+#   parallel.core = parallel::detectCores() - 1,
+#   bayescan.path = "C:/Users/samjg/Documents/Bioinformatics/bin/bayescan_distributed_2.01"
+# )
+
+# :::::::::::::::::::::::::::::::::::::::::::::
+# Plot Fst ::::::::::::::::::::::::::::::::::::
+# :::::::::::::::::::::::::::::::::::::::::::::
+LowvMod_res.fst=read.table("RAnalysis/Output/Popgen/bayescan/LowvMod_bayescan_output_fst.txt")
+plot_bayescan("RAnalysis/Output/Popgen/bayescan/LowvMod_bayescan_output_fst.txt",FDR=0.05)
+# if you save the output in a variable, you can recall the different results:
+# results<-plot_bayescan("output_fst.txt",FDR=0.05)
+# results$PO
+# results$FDR
+# results$FNDR
+# results$p
+# results$outliers
+# results$nb_outliers
+
+
+# reuslts - 15 outlier loci based on bayescan 
+# $PO
+# [1] 6.383888
+# 
+# $FDR
+# [1] 0.04268827
+# 
+# $FNDR
+# [1] 0.09389803
+# 
+# $p
+# [1] 0.86457
+# 
+# $outliers
+#  [1]    1  150  648  821 1134 1259 1267 1303 1320 1349 1494 2457 2699 2753 2783
+# 
+# $nb_outliers
+# [1] 15
+
+
+
+# :::::::::::::::::::::::::::::::::::::::::::::
+# Plot Posterior distribution :::::::::::::::::
+# :::::::::::::::::::::::::::::::::::::::::::::
+
+LowvMod_res.sel=read.table("RAnalysis/Output/Popgen/bayescan/LowvMod_bayescan_output.sel",colClasses="numeric")
+head(LowvMod_res.sel)
+# choose the parameter you want to plot by setting for example:
+parameter="Fst1"
+# then this line will make the plot for:
+plot(density(LowvMod_res.sel[[parameter]]),
+     xlab=parameter,
+     main=paste(parameter,"posterior distribution"))
+# you can plot population specific Fst coefficient by setting
+parameter="Fst1"
+# if you have non-codominant data you can plot posterior for Fis coefficients in each population:
+parameter="Fis1"
+# if you test for selection, you can plot the posterior for alpha coefficient for selection:
+parameter="alpha1"
+# you also have access to the likelihood with:
+parameter="logL"
+# if you have the package "boa" installed, you can very easily obtain Highest Probability 
+# Density Interval (HPDI) for your parameter of interest (example for the 95% interval):
+library("boa")
+boa.hpd(LowvMod_res.sel[[parameter]],0.05)
+```

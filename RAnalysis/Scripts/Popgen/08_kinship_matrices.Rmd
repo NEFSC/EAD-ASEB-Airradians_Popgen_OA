@@ -1,0 +1,667 @@
+---
+title: "07_kinship_matrices"
+author: "Samuel Gurr"
+---
+
+## Objective: 
+
+* ultimately the goal is to determine loci under selection and their heritability across generations - one method being QTL (quantitative trait locus) using packages such as lme4qtl. To run this analysis (scripts downstream from here) we need to assemble a covariance matrix based on the pedigree of our scallops. **In this script** will load the pedigree information to assemble kinship matrices 
+
+
+* kinship matrix
+  * use the outputs from ```sequoia``` (custom functions SequoiaBootPed and GetMaybeRelBootPed, review 07_pedigree.Rmd script) 
+  to build kinship matrices necessary to run heritability and selection
+  * **Important!**: kinship2 is a common R package to execuate this task, however is modelled on sexually dimporphic pedigree, meaning sires and dams are always unique individuals (written for humans). Our data on the bay scallop has some cases at which eggs and sperm were used from the same individual and alowed to batch fertilize separate to avoid selfing - in summary, we have ids that may have been identified as *both* dam and sire for different individuals and infact may be true (based on real batch fertilizations). Therefore we need to explore alternative tools other than kinship2
+  * R packages to run kinship matrix: 
+    - kinship2: as explained above, we will get errors, important to run anyway! Jesca wrote the function sequoia::CalcRPed that acts as a wrapper of kinship2::kinship, lets run this
+    - ribd: seems like this is the option we should puruse, try it! 
+
+### set working directory
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# SET WORKING DIRECTORY 
+knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+#knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+```
+
+### load libraries
+
+```{r, include=FALSE}
+library(tidyverse)
+library(kinship2)
+library(ribd) #install.packages('ribd')
+library(sequoia)
+library(popkin)
+```
+
+### load pedigree output from custom functions SequoiaBootPed and GetMaybeRelBootPed in 07_pedigree.Rmd
+
+* load the pedigree
+
+  - SequoiaBootPed is the pedigree using 100 permutations of ```sequoia::sequoia```
+  - GetMaybeRelBootPed is the pedigree via ```sequoia::GetMaybeRel`` for ids not constructed by SequoiaBootPed, ran permutations until identified
+
+```{r load output pedigrees}
+
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# FO Broodstock pedigree - note there is no pedigree!! required for kinship matrix howevere
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F1.Parentage <- read.csv(paste0(getwd(), "/RAnalysis/Data/Popgen/Parentages/F1_parentage.csv"),sep = ',', head = T) 
+
+F0B.pedigree <- F1.Parentage %>% 
+                        dplyr::select(vcf_ID_raw,Ped) %>% 
+                        dplyr::rename(id = vcf_ID_raw) %>% 
+                        dplyr::mutate(sire = NA, # all NAs unknown
+                                      dam = NA) %>% # all NAs unknown
+                                      # sex = case_when(Ped %in% 'Both' ~ 3,
+                                      #                 Ped %in% 'Dam' ~ 1,
+                                      #                 Ped %in% 'Sire' ~ 2)) %>% 
+                        dplyr::select(!Ped) %>% 
+                        dplyr::filter(!id %in% c( # exclude these broodstock, sequenced but did not contribute to offspring fertilizations
+                                                'adapter_trim.F0-B12.bam',
+                                                'adapter_trim.F0-B19.bam',
+                                                'adapter_trim.F0-B23.bam',
+                                                'adapter_trim.F0-B24.bam'
+                                                ))
+
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# F1 Offspring
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# F1 Offspring (includes all F1 offspring as the low nad mod have common F0 parents, no F0 pedigree known)
+F1O.SequoiaBootPed  <- read.csv("RAnalysis/Output/Popgen/pedigree/F0BF1O/F0BF1O_SequoiaBootPed_out.csv") %>% select(id, dam, sire) 
+F1O.pedigree        <- rbind(F1O.SequoiaBootPed, F0B.pedigree)
+
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# F2 offspring (includes the offspring and broodstock F2s, no F1 broodstock pedigree included)
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# low
+F1BF2O.SequoiaBootPed.low      <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/Low/F1BF2O_Low_SequoiaBootPed_out.csv") %>%  select(id, dam, sire) 
+F1BF2O.GetMaybeRelBootPed.low  <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/Low/F1BF2O_Low_GetMaybeRelBootPed_out.csv") %>%  select(id, dam, sire) 
+F1BF2O.pedigree.low            <- rbind(F1BF2O.SequoiaBootPed.low, F1BF2O.GetMaybeRelBootPed.low)
+
+
+# moderate
+F1BF2O.SequoiaBootPed.mod      <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/Moderate/F1BF2O_Mod_SequoiaBootPed_out.csv") %>%  select(id, dam, sire) 
+F1BF2O.GetMaybeRelBootPed.mod  <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/Moderate/F1BF2O_Mod_GetMaybeRelBootPed_out.csv") %>%  select(id, dam, sire) 
+F1BF2O.pedigree.mod            <- rbind(F1BF2O.SequoiaBootPed.mod, F1BF2O.GetMaybeRelBootPed.mod)
+
+
+
+# high
+F1BF2O.SequoiaBootPed.high      <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/High/F1BF2O_High_SequoiaBootPed_out.csv") %>%  select(id, dam, sire) 
+F1BF2O.GetMaybeRelBootPed.high  <- read.csv("RAnalysis/Output/Popgen/pedigree/F1BF2O/High/F1BF2O_High_GetMaybeRelBootPed_out.csv") %>%  select(id, dam, sire) 
+F1BF2O.pedigree.high            <- rbind(F1BF2O.SequoiaBootPed.high, F1BF2O.GetMaybeRelBootPed.high)
+
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# F3 offspring (includes the offspring only)
+#  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# low
+F2BF3O.SequoiaBootPed.low      <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/Low/F2BF3O_Low_SequoiaBootPed_out.csv") %>%  select(id, dam, sire) 
+F2BF3O.GetMaybeRelBootPed.low  <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/Low/F2BF3O_Low_GetMaybeRelBootPed_out.csv") %>%  select(id, dam, sire) 
+F2BF3O.pedigree.low            <- rbind(F2BF3O.SequoiaBootPed.low, F2BF3O.GetMaybeRelBootPed.low)
+
+# moderate
+F2BF3O.SequoiaBootPed.mod      <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/Moderate/F2BF3O_Mod_SequoiaBootPed_out.csv") %>%  select(id, dam, sire) 
+F2BF3O.GetMaybeRelBootPed.mod  <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/Moderate/F2BF3O_Mod_GetMaybeRelBootPed_out.csv") %>%  select(id, dam, sire) 
+F2BF3O.pedigree.mod            <- rbind(F2BF3O.SequoiaBootPed.mod, F2BF3O.GetMaybeRelBootPed.mod)
+
+
+# high
+F2BF3O.SequoiaBootPed.high      <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/High/F2BF3O_High_SequoiaBootPed_out.csv") %>%  select(id, dam, sire) 
+F2BF3O.GetMaybeRelBootPed.high  <- read.csv("RAnalysis/Output/Popgen/pedigree/F2BF3O/High/F2BF3O_High_GetMaybeRelBootPed_out.csv") %>%  select(id, dam, sire) 
+F2BF3O.pedigree.high            <- rbind(F2BF3O.SequoiaBootPed.high, F2BF3O.GetMaybeRelBootPed.high)
+
+```
+
+
+## Load and subset the vcf file with all SNPs
+
+* objective: to call different vcf file subsets to run pedigree and parentage analysis
+
+  - first lets see the calls to subset based on generation and life stage, below our master calls
+  
+  - **important** F0-12, F0-19, and F0-23 were sequenced but did not contribute to F1 offspring, omit
+  F0-12 is column 4
+  F0-19 is column 11
+  F0-23 is column 16
+  
+```{r list all IDs in the master vcf}
+
+# call th vcf file with all ids for the project 
+All.vcf <- vcfR::read.vcfR(here::here(getwd(),
+                            "RAnalysis", 
+                            "Data", 
+                            "Popgen", 
+                            "03_prune", 
+                            "out.7.phased.vcf.gz"), verbose = FALSE)
+
+All.ListIDs     <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+
+All_LOW_MOD.vcf <- All.vcf[,c(1:3, 5:10, 12:15, 17:139, # F0 and all F1 offspring
+                              153:163, 198:218, # F2 offspring from low OA
+                              164:177, 219:250, # F2 offspring from moderate OA
+                              295:343, # F3 offspring from low OA
+                              344:392)] # F3 offspring from moderate OA
+
+All_LOW_MOD.ListIDs     <- colnames(All_LOW_MOD.vcf@gt[,2:length(colnames(All_LOW_MOD.vcf@gt))])
+
+```
+
+```{r strata metadata}
+
+# list ids for all individuals int he vcf file
+All.ListIDs  <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+
+# final metadata
+All.metadata <- as.data.frame(matrix(ncol = 1,
+                                     nrow = length(All.ListIDs))) %>% 
+                          mutate(id = All.ListIDs,
+                                 type = dplyr::case_when(grepl("-B", id) ~ "broodstock", TRUE ~ 'juvenile'),
+                                 gen = dplyr::case_when(grepl("F0", id) ~ "F0",
+                                                             grepl("F1", id) ~ "F1",
+                                                             grepl("F2", id) ~ "F2",
+                                                             grepl("F3", id) ~ "F3",
+                                                             TRUE ~ "F1"),
+                                 treatment = dplyr::case_when(
+                                        grepl("F0", id) ~ "none",
+                                        grepl("pH7\\.",id) ~ "High",
+                                        grepl(c("pH75\\.|.201.|.203.|.204.|.251.|.253.|.254.|.301.|.303.|.304.|.351.|.352.|.353.|.354."), id) ~
+                                        "Moderate",
+                                        grepl(c("pH8|.101.|.103.|.104.|.153.|.154.|.155.|.3.|.4.|.5."), id) ~ 
+                                        "Low")) %>% 
+                                dplyr::mutate(gen_treatment = 
+                                                dplyr::case_when(gen == "F0" ~ "F0",
+                                                                 gen %in% c("F1","F2","F3") ~
+                                                                   paste0(gen,'_',treatment))) %>% 
+                                select(-V1) 
+
+```
+
+* load the vcf file to otbain a list of all IDs
+* assign birthyear and yearlast based on generation F0, F1, F2, and F3 in the id names
+* load the parentage data of the F1 F2 and F3 offspring, these contain the broodstock "assignments" 
+  * **note** assignments as female if only egg and male if only sperm was used fir batch fertilizations, otherwise given unknown for hermaphroditic contributions to batch fertilization, this may be inappropriate for these data and solely assign all animals as unknown for consistency - repeat this to test whether results change 
+* subset All.LifeHistData.2 based on ids in the pedigree
+
+
+
+
+```{r lifehistory and sex}
+
+# use ids to creat ethe lifehostyr reference data
+
+# data.frame with up to 6 columns:
+
+# ID max. 30 characters long
+
+# Sex 1 = female, 2 = male, 3 = unknown, 4 = hermaphrodite, other numbers or NA = unknown
+
+# BirthYear birth or hatching year, integer, with missing values as NA or any negative number.
+
+# BY.min minimum birth year, only used if BirthYear is missing
+ 
+# BY.max maximum birth year, only used if BirthYear is missing
+ 
+# Year.last  Last year in which individual could have had offspring. Can e.g. in mammals be the year before death for females, and year after death for males.
+
+
+# OBJECTIVE:
+# * below we (1) manually create a lifehist data frame assigning sex as '4' hermaphordites
+# (2) merge all parentage broodstock data where we known whether eggs, sperm, or both were used and thus 1,2 or 4 for sex assignment
+# (3) lastly merge the first manual lifehist dataframe with the adult broodstock sex assignment for a final 'editted' data
+
+# 1. LIFE HISTPRY DATA  :::::::::::::::::::::::::::
+# * make this manually based on numeric birthyear
+# * here we assume the F0s start as year 1 and are 1 year olds, meaning they could spawn until year 3,
+# * the remaining generation s follow the same pattern, with viable spawning history fro two years after birth
+patterns <- c("F0", "F1", "F2","F3") # a few IDs do not have a 'F' delimiter for generation, these are all F1 juveniles
+All.LifeHistData.1 <- as.data.frame(matrix(NA, 
+                                             ncol = 6, 
+                                             nrow = length(All.ListIDs))) %>% 
+                          dplyr::rename(id=V1,
+                                 sex=V2, # make this 4, hermaphordite
+                                 BirthYear=V3,
+                                 BY.min=V4,# only need if BirthYear is missing, NA
+                                 BY.max=V5,# only need if BirthYear is missing, NA
+                                 YearLast=V6) %>% 
+                          dplyr::mutate(id = All.ListIDs,
+                                 sex = 4,
+                                 BirthYear = case_when(
+                                   grepl("F0", id) ~ 1,
+                                   !grepl(paste(patterns,collapse="|"), id) ~ 2, # a few F1 juveniles without 'F' in ID, birthyear 2
+                                   grepl("F1", id) ~ 2,
+                                   grepl("F2", id) ~ 3,
+                                   grepl("F3", id) ~ 4),
+                                   
+                                 YearLast = case_when(
+                                   grepl("F0", id) ~ 3,
+                                   !grepl(paste(patterns,collapse="|"), id) ~ 4, # a few F1 juveniles without 'F' in ID, birthyear 2
+                                   grepl("F1", id) ~ 4,
+                                   grepl("F2", id) ~ 5,
+                                   grepl("F3", id) ~ 6),
+                          )
+
+
+# 2. SEX  :::::::::::::::::::::::::::
+# * note that we have controlled spawns where we used eggs and or sperm of the spawners and recorded this information 
+# * although scallops are hermaphrodites (noted as '4' for all offspring!) we can mark the broodstock as dams sires or both
+
+F1.Parentage <- read.csv(paste0(getwd(),"/RAnalysis/Data/Popgen/Parentages/F1_parentage.csv"), sep = ',', head = T) %>% 
+                  dplyr::mutate(Gen = "F0",
+                                Treatment = NA) # added just to match F2 and F3.Parentage and rbind a master below
+
+F2.Parentage <- read.csv(paste0(getwd(),"/RAnalysis/Data/Popgen/Parentages/F2_parentage.csv"), sep = ',', head = T) %>% 
+                  dplyr::mutate(Gen = "F1",
+                                Batch_5 = NA) # added just to match F1.Parentage and rbind a master below
+
+F3.Parentage <- read.csv(paste0(getwd(),"/RAnalysis/Data/Popgen/Parentages/F3_parentage.csv"), sep = ',', head = T) %>% 
+                  dplyr::mutate(Gen = "F2",
+                                Batch_5 = NA) # added just to match F1.Parentage and rbind a master below
+
+# first, run a sanity check before binding all the parentage datafiles
+nrow( 
+  rbind(
+        (F1.Parentage %>%  select(vcf_ID_raw, Ped)),
+        (F2.Parentage %>%  select(vcf_ID_raw, Ped)),
+        (F3.Parentage %>%  select(vcf_ID_raw, Ped))
+        )
+    ) # 107 rows bind ing these data
+nrow(F1.Parentage) + nrow(F2.Parentage) + nrow(F3.Parentage) # 107
+# great, move forwad with binding and editting for life history data
+# find the parentage data files and edit them 
+All.Sex <-   rbind(
+                  (F1.Parentage %>%  select(vcf_ID_raw, Ped)),
+                  (F2.Parentage %>%  select(vcf_ID_raw, Ped)),
+                  (F3.Parentage %>%  select(vcf_ID_raw, Ped))
+                  ) %>% 
+             dplyr::mutate(sex = case_when(
+                              Ped %in% "Dam" ~ 1, # female = only eggs contribute to spawns
+                              Ped %in% "Sire" ~ 2, # male  = only sperm contribute to spawns
+                              Ped %in% "Both" ~ 4 # both eggs and sperm were used 
+                            )) %>% 
+             dplyr::select(!Ped) %>% 
+             dplyr::rename(id = vcf_ID_raw)
+
+
+# 3. MERGE LIFEHIST DATAFRAME WITH BROODSTOCK SEX ASSIGNMENT  :::::::::::::::::::::::::::
+# now edit the lifehistdata including information for the Sex dataframe  
+All.LifeHistData.2   <-  merge( 
+                               dplyr::filter(All.LifeHistData.1, !grepl(c("-B"), id)), # absent of all broodstock
+                               All.Sex, # merge in the broodstock data
+                               all = T) %>% 
+                            dplyr::mutate(BirthYear = case_when(
+                                                                 grepl("F0", id) ~ 1,
+                                                                 # a few F1 juveniles without 'F' in ID, birthyear 2
+                                                                 !grepl(paste(patterns,collapse="|"), id) ~ 2, 
+                                                                 grepl("F1", id) ~ 2,
+                                                                 grepl("F2", id) ~ 3,
+                                                                 grepl("F3", id) ~ 4),
+                                   
+                                          YearLast = case_when(
+                                                                 grepl("F0", id) ~ 2,
+                                                                 # a few F1 juveniles without 'F' in ID, birthyear 2
+                                                                 !grepl(paste(patterns,collapse="|"), id) ~ 3, 
+                                                                 grepl("F1", id) ~ 3,
+                                                                 grepl("F2", id) ~ 4,
+                                                                 grepl("F3", id) ~ 5)
+                                 )
+```
+
+
+### pedigree and kinship matrix: attempt sequoia::CalcRPed wrapper of kinship2
+
+* **Note** as described at the top of the script, this will throw an error if there is an pedigree as dam and sire for different individuals (does not like hermaphrodites!)
+
+```{r kinship2 will not work}
+
+# F1 
+CalcRped(F1O.pedigree, OUT = "DF") # Error message: Id not male, but is a father
+
+# F2
+CalcRped(F1BF2O.pedigree.low, OUT = "DF") # ran successfully because there was not a case of hermaphrodite pedigree
+CalcRped(F1BF2O.pedigree.mod, OUT = "DF") # ran successfully because there was not a case of hermaphrodite pedigree
+CalcRped(F1BF2O.pedigree.high, OUT = "DF") # Id not male, but is a father
+
+# F3
+CalcRped(F2BF3O.pedigree.low, OUT = "DF") # Id not male, but is a father
+CalcRped(F2BF3O.pedigree.mod, OUT = "DF") # Id not male, but is a father
+CalcRped(F2BF3O.pedigree.high, OUT = "DF") # Id not male, but is a father
+```
+
+## Kinship matrix: use pedtools and ribd 
+
+```{r about ribd}
+?ribd
+# Founders are allowed to be inbred, which enables construction of any given kappa coefficients, as described in Vigeland (2020). In addition to the standard coefficients, 'ribd' also computes a range of lesser-known coefficients, including generalised kinship coefficients, multi-person coefficients and two-locus coefficients
+```
+
+
+### All data 
+
+Merge each pedigree file, create kinship matrix 
+
+```{r Kinship matrix: All data}
+
+All.pedigree <- rbind( # F1 offspring w/blank F0
+                          F1O.pedigree,
+                          # F1 offspring 
+                          F1BF2O.pedigree.low,
+                          F1BF2O.pedigree.mod,
+                          F1BF2O.pedigree.high,
+                          # F2 offspring
+                          F2BF3O.pedigree.low,
+                          F2BF3O.pedigree.mod,
+                          F2BF3O.pedigree.high
+                          )
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Pedigree using pedtools::ped
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# and merge with the lifehistory data to obtain sex
+# sex == 4 was assigned for all offspring, whereas 1 or 2 was assigned for parents that solely contributed sperm and egg
+# pedtools::ped only recognizes sex 0,1, and 2 where 0 is unknown
+
+# (1)  merge with the lifehistory data to obtain sex
+# sex == 4 was assigned for all offspring, whereas 1 or 2 was assigned for parents that solely contributed sperm and egg
+# pedtools::ped only recognizes sex 0,1, and 2 where 0 is unknown
+All.pedigree.sex <- merge(
+                          All.pedigree, # bind F1 offspring and F0 broodstokc pedigree
+                          (All.LifeHistData.2 %>% select(id, sex)), # merge with lifehistory to get sex
+                        by = 'id'
+                        ) %>% 
+                    #dplyr::mutate(sex == 0) # try this as well, just assign all as unknown since they are hermaphrodites
+                    dplyr::mutate(sex =  # format sex so that all occurances of '4' are ow 0 for pedtools
+                                    case_when(sex == 4 ~ 0,
+                                              sex %in% NA ~ 0,
+                                              .default = sex))
+
+
+# (2)  Optional! merge with metadata to reorder
+# why? later we will use plot_popkin with groups by gen*treatment, 
+# the order here is extremely influenctial on that final plot, so we will add gen treatment metadata
+# then reorder the data before making the kinship matrix
+?fct_reorder
+All.pedigree.sex.metadata <- merge(All.pedigree.sex, All.metadata, by = 'id') %>% 
+                                      select(id, dam, sire, sex, gen_treatment, type) %>% 
+                                      dplyr::arrange(match(gen_treatment, c("F0", 
+                                                                      "F1_Low", 
+                                                                      "F1_Moderate",
+                                                                      "F2_Low", 
+                                                                      "F2_Moderate",
+                                                                      "F2_High",
+                                                                      "F3_Low", 
+                                                                      "F3_Moderate",
+                                                                      "F3_High")), desc(type)) %>% # arrange order of factors                                       # here foing from F0 to F3 (low nad moderate, luckily alphabetical!)
+                                      select(!gen_treatment) # dont need this column anymore 
+
+nrow(All.pedigree.sex.metadata) == nrow(All.pedigree.sex) #must be TRUE
+
+
+# ped
+All.pedform <- pedtools::ped(id = All.pedigree.sex.metadata$id,
+                                        fid = All.pedigree.sex.metadata$dam,
+                                        mid = All.pedigree.sex.metadata$sire,
+                                        sex = All.pedigree.sex.metadata$sex)
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Kinship matrix using ribd::kinship
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+All.kinship <- ribd::kinship(All.pedform)
+
+# wrtie the kinship matrix
+write.csv(as.matrix(All.kinship),
+          paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/kinship_matrix_master.csv"),
+          row.names=TRUE)
+```
+
+
+### Low v. Moderate
+
+Merge the following pedigrees to a master file: 
+
+  - F1O.pedigree = F1 low and moderate offspring and subseqent broodstock (same F0 parents!)
+  
+  - F1BF2O.pedigree.low = F2 low (contains F1 broodstock as dam and sires, need their pedigrees in F1O.pedigree)
+  
+  - F1BF2O.pedigree.mod = F2 moderate (contains F1 broodstock as dam and sires, need their pedigrees in F1O.pedigree)
+  
+  - F2BF3O.pedigree.low = F3 low (contains F2 broodstock as dam and sires, need their pedigrees in F1BF2O.pedigree.low)
+  
+  - F2BF3O.pedigree.mod = F3 moderate (contains F2 broodstock as dam and sires, need their pedigrees in F1BF2O.pedigree.mod)
+
+```{r Kinship matrix: Low v. Moderate}
+
+LowvMod.pedigree <- rbind( # F1 offspring w/blank F0
+                          F1O.pedigree,
+                          # F1 offspring 
+                          F1BF2O.pedigree.low,
+                          F1BF2O.pedigree.mod,
+                          # F2 offspring
+                          F2BF3O.pedigree.low,
+                          F2BF3O.pedigree.mod
+                          )
+
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Pedigree using pedtools::ped
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+
+# (1)  merge with the lifehistory data to obtain sex
+# sex == 4 was assigned for all offspring, whereas 1 or 2 was assigned for parents that solely contributed sperm and egg
+# pedtools::ped only recognizes sex 0,1, and 2 where 0 is unknown
+LowvMod.pedigree.sex <- merge(
+                          LowvMod.pedigree, # bind F1 offspring and F0 broodstokc pedigree
+                          (All.LifeHistData.2 %>% select(id, sex)), # merge with lifehistory to get sex
+                        by = 'id'
+                        ) %>% 
+                    #dplyr::mutate(sex == 0) # try this as well, just assign all as unknown since they are hermaphrodites
+                    dplyr::mutate(sex =  # format sex so that all occurances of '4' are ow 0 for pedtools
+                                    case_when(sex == 4 ~ 0,
+                                              sex %in% NA ~ 0,
+                                              .default = sex))
+
+# (2)  Optional! merge with metadata to reorder
+# why? later we will use plot_popkin with groups by gen*treatment, 
+# the order here is extremely influenctial on that final plot, so we will add gen treatment metadata
+# then reorder the data before making the kinship matrix
+?fct_reorder
+LowvMod.pedigree.sex.metadata <- merge(LowvMod.pedigree.sex, All.metadata, by = 'id') %>% 
+                                      select(id, dam, sire, sex, gen_treatment, type) %>% 
+                                      dplyr::arrange(gen_treatment, desc(type)) %>% # arrange order of factors 
+                                      # here foing from F0 to F3 (low nad moderate, luckily alphabetical!)
+                                      select(!c(gen_treatment, type)) # dont need this column anymore 
+
+nrow(LowvMod.pedigree.sex.metadata) == nrow(LowvMod.pedigree.sex) #must be TRUE
+
+
+# ped, make pedigree
+LowvMod.pedform <- pedtools::ped(id = LowvMod.pedigree.sex.metadata$id,
+                                        fid = LowvMod.pedigree.sex.metadata$dam,
+                                        mid = LowvMod.pedigree.sex.metadata$sire,
+                                        sex = LowvMod.pedigree.sex.metadata$sex)
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Kinship matrix using ribd::kinship
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+LowvMod.kinship <- ribd::kinship(LowvMod.pedform )
+
+# wrtie the kinship matrix
+write.csv(as.matrix(LowvMod.kinship),
+          paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/kinship_matrix_low_v_moderate.csv"),
+          row.names=TRUE)
+```
+
+
+## Visualize with plot_popkin
+```{r Low v Mod visualize kinship matrix}
+?plot_popkin
+# in plot_pokin we want to group by subopulation 
+# below I call the metadata for the inserted kinship matrix, and 
+# sort by broodstock jubenile (type) and gneration treatnet
+LowvMod.kinship.metadata <- merge(LowvMod.pedigree.sex, All.metadata, by = 'id') %>% 
+                                select(id, gen_treatment, type) %>% 
+                                dplyr::arrange(gen_treatment, desc(type)) %>% # arrange order of factors 
+                              # here foing from F0 to F3 (low nad moderate, luckily alphabetical!)
+                                select(!type) # dont need this column anymore 
+                                
+# uick snaity check                                
+length(rownames(LowvMod.kinship)) == nrow(LowvMod.kinship.metadata) # must be TRUE sanity check
+
+# create a matrix for th emetadata as directed in the readme
+rownames(LowvMod.kinship.metadata) <- LowvMod.kinship.metadata[, 1]
+LowvMod.kinship.metadata           <- LowvMod.kinship.metadata %>% select(!id)
+LowvMod.kinship.matrix             <- as.matrix(LowvMod.kinship.metadata)
+
+?RColorBrewer
+# col in the plot below, view the possibilities that 
+# are colorblind friendsly
+RColorBrewer::display.brewer.all(n=NULL, 
+                                 type="all", 
+                                 select=NULL, 
+                                 exact.n=TRUE, 
+                                 colorblindFriendly=FALSE)
+colors.pallete <- RColorBrewer::brewer.pal(10, "BrBG")
+
+
+# plot it, save it
+pdf(paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/Heatmap_kinship_matrix_low_v_moderate.pdf"), width = 7, height = 5)
+popkin::plot_popkin(LowvMod.kinship,
+                                                titles = NULL,
+                                                col = colors.pallete,
+                                                col_n = 100, # number of colors to use in the heatmpa (spectrum of)
+                                                mar = NULL,
+                                                mar_pad = 0.2,
+                                                oma = 1.5,
+                                                diag_line = FALSE,
+                                                panel_letters = toupper(letters),
+                                                panel_letters_cex = 1.5,
+                                                panel_letters_adj = -0.1,
+                                                ylab = "Individuals",
+                                                ylab_adj = NA,
+                                                ylab_line = 0,
+                                                ylab_side = 2,
+                                                ylab_per_panel = FALSE,
+                                                layout_add = TRUE,
+                                                layout_rows = 1,
+                                                leg_per_panel = FALSE,
+                                                leg_title = "Kinship",
+                                                leg_cex = 1,
+                                                leg_n = 5,
+                                                leg_mar = 3,
+                                                leg_width = 0.3,
+                                                leg_column = NA,
+                                                names = FALSE, # names of each individual
+                                                names_cex = 1,
+                                                names_line = NA,
+                                                names_las = 0,
+                                                labs = LowvMod.kinship.matrix, # subpopulation vector
+                                                labs_cex = 1,
+                                                labs_las = 2, # angle in graphics::mtext() format
+                                                labs_line = 0,
+                                                labs_sep = TRUE, # adds line to sep sub groups
+                                                labs_lwd = 1,
+                                                labs_col = "black",
+                                                labs_ticks = TRUE,
+                                                labs_text = TRUE,
+                                                labs_even = FALSE,
+                                                null_panel_data = FALSE,
+                                                weights = NULL,
+                                                raster = is.null(weights),
+                                                sym = FALSE
+                                              )
+dev.off()
+```
+
+```{r Master all visualize kinship matrix}
+?plot_popkin
+# in plot_pokin we want to group by subopulation 
+# below I call the metadata for the inserted kinship matrix, and 
+# sort by broodstock jubenile (type) and gneration treatnet
+All.pedigree.metadata <- merge(All.pedigree.sex, All.metadata, by = 'id') %>% 
+                                select(id, gen_treatment, type) %>% 
+                                dplyr::arrange(match(gen_treatment, c("F0", 
+                                                                      "F1_Low", 
+                                                                      "F1_Moderate",
+                                                                      "F2_Low", 
+                                                                      "F2_Moderate",
+                                                                      "F2_High",
+                                                                      "F3_Low", 
+                                                                      "F3_Moderate",
+                                                                      "F3_High")), 
+                                               desc(type)) %>% # arrange order of factors 
+                              # here foing from F0 to F3 (low nad moderate, luckily alphabetical!)
+                                select(!type) # dont need this column anymore 
+                                
+# uick snaity check                                
+length(rownames(All.kinship)) == nrow(All.pedigree.metadata) # must be TRUE sanity check
+
+# create a matrix for th emetadata as directed in the readme
+rownames(All.pedigree.metadata) <- All.pedigree.metadata[, 1]
+All.pedigree.metadata           <- All.pedigree.metadata %>% select(!id)
+All.pedigree.matrix             <- as.matrix(All.pedigree.metadata)
+
+# col in the plot below, view the possibilities that 
+# are colorblind friendsly
+RColorBrewer::display.brewer.all(n=NULL, 
+                                 type="all", 
+                                 select=NULL, 
+                                 exact.n=TRUE, 
+                                 colorblindFriendly=FALSE)
+colors.pallete <- RColorBrewer::brewer.pal(10, "BrBG") # this looks nice 
+
+# plot it, save it
+pdf(paste0(getwd(),"/RAnalysis/Output/Popgen/pedigree/Heatmap_kinship_matrix_master.pdf"), width = 7, height = 5)
+popkin::plot_popkin(All.kinship,
+                                                titles = NULL,
+                                                col = colors.pallete,
+                                                col_n = 100, # number of colors to use in the heatmpa (spectrum of)
+                                                mar = NULL,
+                                                mar_pad = 0.2,
+                                                oma = 1.5,
+                                                diag_line = FALSE,
+                                                panel_letters = toupper(letters),
+                                                panel_letters_cex = 1.5,
+                                                panel_letters_adj = -0.1,
+                                                ylab = "Individuals",
+                                                ylab_adj = NA,
+                                                ylab_line = 0,
+                                                ylab_side = 2,
+                                                ylab_per_panel = FALSE,
+                                                layout_add = TRUE,
+                                                layout_rows = 1,
+                                                leg_per_panel = FALSE,
+                                                leg_title = "Kinship",
+                                                leg_cex = 1,
+                                                leg_n = 5,
+                                                leg_mar = 3,
+                                                leg_width = 0.3,
+                                                leg_column = NA,
+                                                names = FALSE, # names of each individual
+                                                names_cex = 1,
+                                                names_line = NA,
+                                                names_las = 0,
+                                                labs = All.pedigree.matrix, # subpopulation vector
+                                                labs_cex = 1,
+                                                labs_las = 2, # angle in graphics::mtext() format
+                                                labs_line = 0,
+                                                labs_sep = TRUE, # adds line to sep sub groups
+                                                labs_lwd = 1,
+                                                labs_col = "black",
+                                                labs_ticks = TRUE,
+                                                labs_text = TRUE,
+                                                labs_even = FALSE,
+                                                null_panel_data = FALSE,
+                                                weights = NULL,
+                                                raster = is.null(weights),
+                                                sym = FALSE
+                                              )
+dev.off()
+```

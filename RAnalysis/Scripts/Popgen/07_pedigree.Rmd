@@ -1,0 +1,2390 @@
+---
+title: "06_pedigree_kinship"
+author: "Samuel Gurr"
+---
+
+## Objective: 
+
+* ultimately the goal is to determine loci under selection and their heritability across generations - one method being QTL (quantitative trait locus) using packages such as lme4qtl. To run this analysis (scripts downstream from here) we need to assemble a covariance matrix based on the pedigree of our scallops. **In this script** we execute sequoia to construct the pedigree - we then test the outcome as well. 
+
+* pedigree:
+  * use '''sequoia''' for pedigree construction in our multigenerational study, this means assigning dams and sires to progeny F1, F2, and F3 within each pCO2 treatment. Note that we know which broodstock contrubuted sperm and egg and which individuals were combined in batch fertilizations. Use this information as priors to narrow hits to those that are true 
+
+
+* steps: 
+  
+  (1) assemble and edit all necessary inputs to the command sequoia()
+  this incudes the vcf files subset for target groups and converted to a genind and lifehistory data 
+  
+  (2) build a bootstrap function (called Bootped) and run sequoia and acheive pedigree of progeny
+  *Note* this is a custom function that created three datasets, including a raw outcome of each sequoia run and a final dataset based on *known* parentage, read below at the chunk for more details
+  
+  (3) test the outcome 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# SET WORKING DIRECTORY 
+#knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+```
+
+## load libraries
+
+```{r, include=FALSE}
+library(tidyverse)
+library(sequoia)
+library(vcfR)
+```
+
+### load parentage csv files
+
+* contains broodstock ids and data on whether egg (F) or sperm (M) was used for each batch
+
+```{r read parentage csv files}
+F1.Parentage <- read.csv(paste0(getwd(),"/RAnalysis/Data/Popgen/Parentages/F1_parentage.csv"), sep = ',', head = T) %>% 
+                  dplyr::mutate(Gen = "F0",
+                                Treatment = NA) %>% # added just to match F2 and F3.Parentage and rbind a master below
+                  drop_na(Ped)
+F2.Parentage <- read.csv(paste0(getwd(),"/RAnalysis/Data/Popgen/Parentages/F2_parentage.csv"), sep = ',', head = T) %>% 
+                  dplyr::mutate(Gen = "F1",
+                                Batch_5 = NA) # added just to match F1.Parentage and rbind a master below
+
+F3.Parentage <- read.csv(paste0(getwd(),"/RAnalysis/Data/Popgen/Parentages/F3_parentage.csv"), sep = ',', head = T) %>% 
+                  dplyr::mutate(Gen = "F2",
+                                Batch_5 = NA) # added just to match F1.Parentage and rbind a master below
+
+# use tis later for the pedigree summary, what assignement parents are from which batch 
+# Objective to learn whether the pedigree assignment via sequoia was even real - were assigned dam and sire pairs 
+# from the same batch?
+Master.Parentage <- rbind(F1.Parentage,
+                         F2.Parentage,
+                         F3.Parentage)
+```
+
+### parentage edit
+
+**Objective**: later in this script we will need to overlay the batches at which broodstock egggs and sperm derived 
+to understnad whther assigned pedigrees (dam and sire from loci) are real - meaning where the dam and sire 
+assigned with ```sequoia``` actual combined in our contorlled fertilizations? 
+
+* below we edit master parentage to ultimate create columns 'dam.batch' and 'sire.batch' either as NA if 
+not applicable for that broodstock individual or a comma separated list of batches if so
+```{r Master.Parentage.listed}
+  # pedigree.summary - qurstion, are the pedigree assignments even possible? we know which broodstock pairs were allowed to fertilize
+  # together by common batch ids in the Master.Parentage file, overlay this information and add boolean T/F 
+  Master.Parentage.listed <- Master.Parentage %>% 
+                              dplyr::select(vcf_ID_raw, Ped, matches("Batch")) %>% 
+                              dplyr::rename(
+                                     id = vcf_ID_raw,
+                                    `1` = Batch_1,
+                                    `2` = Batch_2,
+                                    `3` = Batch_3,
+                                    `4` = Batch_4,
+                                    `5` = Batch_5
+                                     ) %>% 
+                              dplyr::mutate(
+                                    dam.batch  = 
+                                      case_when(
+                                        str_detect(Ped, "Both|Dam") ~ # when column Ped contais either Both OR Daam
+                                          pmap(., ~ {
+                                          row <- c(...)
+                                          list(names(row[row == 'F']))
+                                        }),
+                                        TRUE ~ NA),
+                                    sire.batch =
+                                      case_when(
+                                        str_detect(Ped, "Both|Sire") ~ # when column Ped contais either Both OR Daam
+                                         pmap(., ~ {
+                                          row <- c(...)
+                                          list(names(row[row == 'M']))
+                                        }),
+                                        TRUE ~ NA),                     
+                                        ) 
+
+  
+for (i in 1:nrow(Master.Parentage.listed)) {
+  
+  # redo the dam list as character string NA or list comma separated
+  if (length(Master.Parentage.listed$dam.batch[i][[1]]) == 0) { # cased of 'NULL'
+    Master.Parentage.listed$dam.batch[i] = 'NA' 
+  } else { # there are batches for dam, list them
+    Master.Parentage.listed$dam.batch[i] <- paste0((as.data.frame(Master.Parentage.listed$dam.batch[i]) %>% 
+                               na.omit())[[1]], # NAs in the list, work it to the right format
+                                   collapse=", ")
+  }
+  
+  # redo the sire list as character string NA or list comma separated
+  if (length(Master.Parentage.listed$sire.batch[i][[1]]) == 0) { # cased of 'NULL'
+    Master.Parentage.listed$sire.batch[i] = 'NA' 
+  } else { # there are batches for sire, list them
+    Master.Parentage.listed$sire.batch[i] <- paste0((as.data.frame(Master.Parentage.listed$sire.batch[i]) %>% 
+                               na.omit())[[1]], # NAs in the list, work it to the right format
+                                   collapse=", ")
+  }
+  
+} # close the for loop
+
+# master for all possible dams
+Master.Parentage.listed.Dams   <- Master.Parentage.listed %>% filter(Ped %in% c("Both", "Dam"))
+# master for all possible sires
+Master.Parentage.listed.Sires <- Master.Parentage.listed %>% filter(Ped %in% c("Both", "Sire"))
+    
+    
+# View(Master.Parentage.listed)
+# View(Master.Parentage.listed) # take a look its in a book, its a reading rain... its a crazy amount of code to get here!
+```
+
+## load vcf files
+
+-   master 'All' vcf file, meaning all individuals sequenced for the experiment
+
+```{r read master vcf file}
+
+All.vcf <- vcfR::read.vcfR(here::here(getwd(),
+                            "RAnalysis", 
+                            "Data", 
+                            "Popgen", 
+                            "03_prune", 
+                            "out.7.phased.vcf.gz"), verbose = FALSE)
+
+
+# edit sample ids fown to generation-ID-treatment nu omitting adaptertrim and.bam
+# now that column 1 All.vcf@gt is 'FORMAT' and must remain 
+# edit_ids_df <- str_match(colnames(All.vcf@gt[,2:ncol(All.vcf@gt)]), "adapter_trim[.]\\s*(.*?)\\s*[.]bam")[,2]
+# 
+# colnames(All.vcf@gt[,2:ncol(All.vcf@gt)]) <- edit_ids_df[,1]
+# View(All.vcf@gt)
+
+```
+
+- use 'All.vcf' for the total analysis, this is ultimately the objetive
+but beofre moving forwrad, below we subset these data by generation(s) to test sequoia 
+
+```{r All individuals F0 F1 F2 and F3}
+All.vcf # 391  samples, 2,947 variants, 16 chormosomes
+```
+
+
+## How to subset the All.vcf for target variants, samples, chromosomes, etc.
+
+-   Subset by chromosome(s):
+
+```         
+chrom_of_interest <- c("chr1", "chr2", "chr3")
+vcf_subset <- vcf[vcf@fix[, "CHROM"] %in% chrom_of_interest, ]
+```
+
+-   Subset by variants (rows)
+
+```         
+vcf_subset <- vcf[1:1000, ]  # Select first 1000 variants
+```
+
+-   Subset by samples (columns)
+
+```         
+vcf_subset <- vcf[, 1:10]  # Select first 10 samples (including FORMAT column)
+```
+
+
+## Subset the vcf file
+
+* objective: to call different vcf file subsets to run pedigree and parentage analysis
+
+  - first lets see the calls to subset based on generation and life stage, below our master calls
+  
+  - **important** F0-12, F0-19, and F0-23 were sequenced but did not contribute to F1 offspring, omit
+  F0-12 is column 4
+  F0-19 is column 11
+  F0-23 is column 16
+
+```{r subset calls for vcf generation and life stage}
+
+# view cl names to know what to subset by 
+colnames(All.vcf@gt)
+# F0 are 2:26
+colnames(All.vcf@gt[,2:26]) # original parents - founders if you will
+# F1 juveniles are 63:139
+colnames(All.vcf@gt[,63:139]) # first generation of juveniles (direct offspring of F0)
+# F2 juveniles are 178:250
+colnames(All.vcf@gt[,178:250]) # second genertation of juveniles (offsring of pH-specifc parents, grandchildren of F0)
+# F3 juveniles are 251:392
+colnames(All.vcf@gt[,251:392]) # third generation of juveniles (offpsring of pH-specific parents, grandchildren of F1 pH parents, great graandchildren of F0)
+# F1 broodstock 27:62
+colnames(All.vcf@gt[,27:62])
+# F2 broodstock
+colnames(All.vcf@gt[,140:177])
+
+```
+
+-   F0 broodstock and F1 offspring: 
+Remember that our experiment ran fir three generations! Here is a best foot forward to test the sequoia pipeline with just parents and offspring. Keep in mind that we do not have grandparents in this trial (requiring F2 offspring!)
+
+```{r subset vcf file}
+# subsets, always retain column 1 'Format' 
+
+#F0 broodstock and F1 offspring  - first simple parent/offspring test of sequoia pipeline
+F0BF1O.vcf <- All.vcf[,c(1:3, 5:10, 12:15, 17:26,63:139, 27:62)] # 138 samples, 2,947 variants, 16 chromosomes
+
+# F1 broodstock and F2 offspring (treatment specific!)
+F1BF2O_LOW.vcf  <- All.vcf[,c(1, 27:45, 198:218, 153:163)] # ??? samples, 2,947 variants, 16 chromosomes
+F1BF2O_MOD.vcf  <- All.vcf[,c(1, 46:62, 219:250, 164:177)] # ??? samples, 2,947 variants, 16 chromosomes
+F1BF2O_HIGH.vcf <- All.vcf[,c(1, 27:45, 178:197, 140:152)] # ??? samples, 2,947 variants, 16 chromosomes
+
+# F2 broodstock and F3 offspring (treatment specific!)
+F2BF3O_LOW.vcf  <- All.vcf[,c(1, 152:163, 295:343)] # ??? samples, 2,947 variants, 16 chromosomes
+F2BF3O_MOD.vcf  <- All.vcf[,c(1, 164:177, 344:392)] # ??? samples, 2,947 variants, 16 chromosomes
+F2BF3O_HIGH.vcf <- All.vcf[,c(1, 140:152, 251:294)] # ??? samples, 2,947 variants, 16 chromosomes
+
+# F0 through F3 low and moderate only!
+All_LOW_MOD.vcf <- All.vcf[,c(1:3, 5:10, 12:15, 17:139, # F0 and all F1 offspring
+                              153:163, 198:218, # F2 offspring from low OA
+                              164:177, 219:250, # F2 offspring from moderate OA
+                              295:343, # F3 offspring from low OA
+                              344:392)] # F3 offspring from moderate OA
+```
+
+
+```{r create genind}
+
+# EVERYONE  ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# all individuals, gret grandparents (F0), grandparents (F1B), parents (F2B), and their offpsrin g(F1J, F2J and F3J)
+All.gen          <- All.vcf %>% vcfR2genind() 
+
+# F0 AND F1 OFFPSRING ALL   ::::::::::::::::::::::::::::::::::::::::::
+
+# F0 parents and F1 offspring, first test - cretaed the first cohort of low and moderate scallops
+F0BF1O.gen       <- F0BF1O.vcf %>% vcfR2genind() 
+
+# F1 AND F2 OFFPSRING (treatment specific)   :::::::::::::::::::::::::
+
+# LOW F1 parents and their F2 offspring
+F1BF2O_LOW.gen   <- F1BF2O_LOW.vcf %>% vcfR2genind() 
+# MODERATE F1 parents and their F2 offspring
+F1BF2O_MOD.gen   <- F1BF2O_MOD.vcf %>% vcfR2genind() 
+# HIGH F1 parents and their F2 offspring
+F1BF2O_HIGH.gen  <- F1BF2O_HIGH.vcf %>% vcfR2genind() 
+
+# F2 AND F3 OFFPSRING (treatment specific)   :::::::::::::::::::::::::
+
+# HIGH F2 parents and their F3 offspring
+F2BF3O_LOW.gen   <- F2BF3O_LOW.vcf %>% vcfR2genind() 
+# LOW F2 parents and their F3 offspring
+F2BF3O_MOD.gen   <- F2BF3O_MOD.vcf %>% vcfR2genind() 
+# HIGH F2 parents and their F3 offspring
+F2BF3O_HIGH.gen  <- F2BF3O_HIGH.vcf %>% vcfR2genind() 
+
+
+
+# F0 thorugh F3 low and moderate only! :::::::::::::::::::::::::::::::
+All_LOW_MOD.gen  <- All_LOW_MOD.vcf %>% vcfR2genind() 
+
+```
+
+# **Sequoia**
+
+[link here](https://jiscah.github.io/reference/figures/flowchart.svg)
+
+a comprehensive R package for muligenerational pedigree reconstruction emplpys a fast heuristic hill-climbing algorithm to explore the liklihood surface using SNP data and input sinply the birthyear of your genotyped individuals
+
+key features include:
+
+-   parentage assignment
+-   sibship clustering
+-   grandparent assignment
+-   andles any proportion of genotyped parents
+-   accounts for genotyping errors
+-   does not require predefined lists of candidate parents
+
+```{r read about the sequoia package!}
+?sequoia # the head package,
+help(sequoia)
+```
+
+## Format SNP data (vcf file above) for sequoia
+
+-   check whether current format is correct with '**CheckGeno**'
+
+    -   GenoM = genotype matrix
+    -   quite = suppress messages (T/F)
+    -   Plot = display the plots of SnpStats (T/F)
+    -   Return= reutrn the cleaned genotype matrix using 'GenoM' or use 'excl' to return a list of excluded SNPs and individuals
+
+```{r check format compatibility of vcf file}
+?CheckGeno # about this call
+
+# cleaned genotype matrix using GenoM
+# Genotype matrix looks OK! There are  391  individuals and  5894  SNPs.
+GenoM.checked <- CheckGeno(All.matrix, Return="GenoM")
+GenoM.checked <- CheckGeno(
+                            GenoM = All.vcf_matrix,
+                            quiet = TRUE, # print messages please
+                            Plot  = FALSE,  # get the plots
+                            Return = "GenoM",
+                            Strict = TRUE
+                          )
+
+# list of excluded SNPs and individuals using excl
+Excl <- CheckGeno(
+                  GenoM = All.vcf_matrix,
+                  # quiet = FALSE, # print messages please
+                  # Plot  = TRUE,  # get the plots
+                  Return = "excl"
+                  # Strict = TRUE
+                )
+names(Excl)
+```
+
+## Format required dataframes to run sequoia and call in sequoia 
+
+* GenoM
+* LifeHistData
+* Pairs
+* Pedigree (output from '''sequoia''')
+
+```{r gather IDs}
+# we will need this list of strings to populate ID columns in the required
+# dataframes in sequoia, note these must be the same as the columns in the 
+# vcf SNP matrix!
+
+# EVERYONE  ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+All.ListIDs           <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+
+# F0 AND F1 OFFPSRING ALL   ::::::::::::::::::::::::::::::::::::::::::
+F0BF1O.ListIDs        <- colnames(F0BF1O.vcf@gt[,2:length(colnames(F0BF1O.vcf@gt))])
+
+# F1 AND F2 OFFPSRING (treatment specific)   :::::::::::::::::::::::::colnames(F1BF2O_LOW.vcf@gt)
+F1BF2O_LOW.ListIDs    <- colnames(F1BF2O_LOW.vcf@gt[,2:length(colnames(F1BF2O_LOW.vcf@gt))])
+F1BF2O_MOD.ListIDs    <- colnames(F1BF2O_MOD.vcf@gt[,2:length(colnames(F1BF2O_MOD.vcf@gt))])
+F1BF2O_HIGH.ListIDs   <- colnames(F1BF2O_HIGH.vcf@gt[,2:length(colnames(F1BF2O_HIGH.vcf@gt))])
+
+# F2 AND F3 OFFPSRING (treatment specific)   :::::::::::::::::::::::::
+F2BF3O_LOW.ListIDs    <- colnames(F2BF3O_LOW.vcf@gt[,2:length(colnames(F2BF3O_LOW.vcf@gt))])
+F2BF3O_MOD.ListIDs    <- colnames(F2BF3O_MOD.vcf@gt[,2:length(colnames(F2BF3O_MOD.vcf@gt))])
+F2BF3O_HIGH.ListIDs   <- colnames(F2BF3O_HIGH.vcf@gt[,2:length(colnames(F2BF3O_HIGH.vcf@gt))])
+
+# F0 through F3 low and moderate only! :::::::::::::::::::::::::::::::
+All_LOW_MOD.ListIDs  <- colnames(All_LOW_MOD.vcf@gt[,2:length(colnames(All_LOW_MOD.vcf@gt))]) 
+
+```
+
+* GenoM 
+  - numeric matrix with genotype data coded as 0,1,2 used for ```sequoia```, ```CalcPairLL```, and 
+```{r GenoM}
+# EVERYONE  ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+All.GenoM          <- as.matrix(All.gen)
+
+# F0 AND F1 OFFPSRING ALL   ::::::::::::::::::::::::::::::::::::::::::
+F0BF1O.GenoM       <- as.matrix(F0BF1O.gen)
+
+# F1 AND F2 OFFPSRING (treatment specific)   :::::::::::::::::::::::::
+F1BF2O_LOW.GenoM   <- as.matrix(F1BF2O_LOW.gen)
+F1BF2O_MOD.GenoM   <- as.matrix(F1BF2O_MOD.gen)
+F1BF2O_HIGH.GenoM  <- as.matrix(F1BF2O_HIGH.gen)
+
+# F2 AND F3 OFFPSRING (treatment specific)   :::::::::::::::::::::::::
+F2BF3O_LOW.GenoM   <- as.matrix(F2BF3O_LOW.gen)
+F2BF3O_MOD.GenoM   <- as.matrix(F2BF3O_MOD.gen)
+F2BF3O_HIGH.GenoM  <- as.matrix(F2BF3O_HIGH.gen)
+
+# F0 through F3 low and moderate only! :::::::::::::::::::::::::::::::
+All_LOW_MOD.GenoM  <- as.matrix(All_LOW_MOD.gen)
+```
+
+* LifeHistData 
+  - dataframe with 6 columns for sampLe metadata
+```{r LifeHistData template}
+
+# data.frame with up to 6 columns:
+
+# ID max. 30 characters long
+
+# Sex 1 = female, 2 = male, 3 = unknown, 4 = hermaphrodite, other numbers or NA = unknown
+
+# BirthYear birth or hatching year, integer, with missing values as NA or any negative number.
+
+# BY.min minimum birth year, only used if BirthYear is missing
+ 
+# BY.max maximum birth year, only used if BirthYear is missing
+ 
+# Year.last  Last year in which individual could have had offspring. Can e.g. in mammals be the year before death for females, and year after death for males.
+
+
+# OBJECTIVE:
+# * below we (1) manually create a lifehist data frame assignming sex as '4' hermaphordites
+# (2) merge all parentage broodstock data where we known whether eggs, sperm, or both were used and thus 1,2 or 4 for sex assignment
+# (3) lastly merge the first manual lifehist dataframe with the adult broodstock sex assignment for a final 'editted' data
+
+# 1. LIFE HISTPRY DATA  :::::::::::::::::::::::::::
+# * make this manually based on numeric birthyear
+# * here we assume the F0s start as year 1 and are 1 year olds, meaning they could spawn until year 3,
+# * the remaining generation s follow the same pattern, with viable spawning history fro two years after birth
+patterns <- c("F0", "F1", "F2","F3") # a few ids do not have a 'F' delimiter for generation, these are all F1 juveniles
+All.LifeHistData.1 <- as.data.frame(matrix(NA, 
+                                             ncol = 6, 
+                                             nrow = length(All.ListIDs))) %>% 
+                          rename(id=V1,
+                                 Sex=V2, # make this 4, hermaphordite
+                                 BirthYear=V3,
+                                 BY.min=V4,# only need if BirthYear is missing, NA
+                                 BY.max=V5,# only need if BirthYear is missing, NA
+                                 Year.last=V6) %>% 
+                          mutate(id = All.ListIDs,
+                                 Sex = 4,
+                                 BirthYear = case_when(
+                                   grepl("F0", id) ~ 1,
+                                   !grepl(paste(patterns,collapse="|"), id) ~ 2, # a few F1 juveniles without 'F' in id, birthyear 2
+                                   grepl("F1", id) ~ 2,
+                                   grepl("F2", id) ~ 3,
+                                   grepl("F3", id) ~ 4),
+                                   
+                                 Year.last = case_when(
+                                   grepl("F0", id) ~ 3,
+                                   !grepl(paste(patterns,collapse="|"), id) ~ 4, # a few F1 juveniles without 'F' in id, birthyear 2
+                                   grepl("F1", id) ~ 4,
+                                   grepl("F2", id) ~ 5,
+                                   grepl("F3", id) ~ 6),
+                          )
+
+
+# 2. SEX  :::::::::::::::::::::::::::
+# * note that we have controlled spawns where we used eggs and or sperm of the spawners and recorded this information 
+# * although scallops are hermaphrodites (noted as '4' for all offspring!) we can mark the broodstock as dams sires or both
+
+# first, run a sanity check before binding all the parentage datafiles
+nrow( 
+  rbind(
+        (F1.Parentage %>%  select(vcf_ID_raw, Ped)),
+        (F2.Parentage %>%  select(vcf_ID_raw, Ped)),
+        (F3.Parentage %>%  select(vcf_ID_raw, Ped))
+        )
+    ) # 107 rows bind ing these data
+nrow(F1.Parentage) + nrow(F2.Parentage) + nrow(F3.Parentage) # 107
+# great, move forwad with binding and editting for life history data
+# find the parentage data files and edit them 
+All.Sex <-   rbind(
+                  (F1.Parentage %>%  select(vcf_ID_raw, Ped)),
+                  (F2.Parentage %>%  select(vcf_ID_raw, Ped)),
+                  (F3.Parentage %>%  select(vcf_ID_raw, Ped))
+                  ) %>% 
+             dplyr::mutate(Sex = case_when(
+                              Ped %in% "Dam" ~ 1, # female = only eggs contribute to spawns
+                              Ped %in% "Sire" ~ 2, # male  = only sperm contribute to spawns
+                              Ped %in% "Both" ~ 4 # both eggs and sperm were used 
+                            )) %>% 
+             dplyr::select(!Ped) %>% 
+             dplyr::rename(id = vcf_ID_raw)
+
+
+# 3. MERGE LIFEHIST DATAFRAME WITH BROODSTOCK SEX ASSIGNMENT  :::::::::::::::::::::::::::
+# now edit the lifehistdata including information for the Sex dataframe  
+All.LifeHistData.2   <-  merge( 
+                               dplyr::filter(All.LifeHistData.1, !grepl(c("-B"), id)), # absent of all broodstock
+                               All.Sex, # merge in the broodstock data
+                               all = T) %>% 
+                            dplyr::mutate(BirthYear = case_when(
+                                                                 grepl("F0", id) ~ 1,
+                                                                 # a few F1 juveniles without 'F' in id, birthyear 2
+                                                                 !grepl(paste(patterns,collapse="|"), id) ~ 2, 
+                                                                 grepl("F1", id) ~ 2,
+                                                                 grepl("F2", id) ~ 3,
+                                                                 grepl("F3", id) ~ 4),
+                                   
+                                          Year.last = case_when(
+                                                                 grepl("F0", id) ~ 2,
+                                                                 # a few F1 juveniles without 'F' in id, birthyear 2
+                                                                 !grepl(paste(patterns,collapse="|"), id) ~ 3, 
+                                                                 grepl("F1", id) ~ 3,
+                                                                 grepl("F2", id) ~ 4,
+                                                                 grepl("F3", id) ~ 5)
+                                 )
+```
+
+```{r LifeHistData assigned}
+# EVERYONE  ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# omit ids that we do not have data for (in vcfs!)
+All.LifeHistData <- All.LifeHistData.2 %>% filter(id %in% colnames(All.vcf@gt)) 
+
+# F0 AND F1 OFFPSRING ALL   ::::::::::::::::::::::::::::::::::::::::::
+F0BF1O.LifeHistData <- dplyr::filter(All.LifeHistData, !grepl(c("F2|F3"), id))
+
+# F1 AND F2 OFFPSRING (treatment specific)   :::::::::::::::::::::::::
+F1BF2O                   <- dplyr::filter(All.LifeHistData, grepl(c("F1-B|F2-J|F2-B"), id))
+F1BF2O_LOW.LifeHistData  <- dplyr::filter(F1BF2O, grepl("pH8", id))
+F1BF2O_MOD.LifeHistData  <- dplyr::filter(F1BF2O, grepl("pH75", id))
+F1BF2O_HIGH.LifeHistData <- rbind(
+                                  # filter only pH8 F1 broodstock from the LOW above 
+                                  dplyr::filter(F1BF2O_LOW.LifeHistData, grepl("F1-B", id)),
+                                  # bind to filtered data for just pH7 - these are only juveniles started from pH8 offspring after set
+                                  dplyr::filter(F1BF2O, grepl("pH7\\.", id)) 
+                                  )
+# F2 AND F3 OFFPSRING (treatment specific)   :::::::::::::::::::::::::
+F2BF3O                   <- dplyr::filter(All.LifeHistData, grepl(c("F2-B|F3"), id))
+F2BF3O_LOW.LifeHistData  <- dplyr::filter(F2BF3O, grepl("pH8", id))
+F2BF3O_MOD.LifeHistData  <- dplyr::filter(F2BF3O, grepl("pH75", id))
+F2BF3O_HIGH.LifeHistData <-  dplyr::filter(F2BF3O, grepl("pH7\\.", id)) 
+
+
+# F0 through F3 low and moderate only! :::::::::::::::::::::::::::::::
+All_LOW_MOD.LifeHistData <- dplyr::filter(All.LifeHistData, !grepl("pH7\\.", id)) # all but pH7 data
+```
+
+* Pedigree
+  -  run ```sequoia``` for pedigree reconstruction based on SNP data including parenange assignment 
+  and sibship clustering. Note that other commands require pedigree input as 3 columns id-dam-sire, 
+  with sample ids for parentage - here we calculate it 
+  
+  - **about inputs** - GenoM
+```{r about sequoia to get pedigree}
+?sequoia
+# sequoia(
+#   GenoM = NULL,
+#   LifeHistData = NULL,
+#   SeqList = NULL,
+#   Module = "ped",
+#   Err = 1e-04,
+#   Tfilter = -2,
+#   Tassign = 0.5,
+#   MaxSibshipSize = 100,
+#   DummyPrefix = c("F", "M"),
+#   Complex = "full",
+#   Herm = "no",
+#   UseAge = "yes",
+#   args.AP = list(Flatten = NULL, Smooth = TRUE),
+#   mtSame = NULL,
+#   CalcLLR = TRUE,
+```
+
+
+
+* note: after some trial and error I found that inputting all SNPs results in no data! 
+alternatively, inputing a subset of the first 20-100 SNPs did result in parentage assignment
+
+* what to do next? 
+- optimize the number of input SNPs based on maximum output of assigned pedigrees
+
+## Pedtest
+
+**Objective** Run a function ```Pedtest``` that iterates ```sequoia``` from 1:100 
+outputting the number of unique assigned pedigrees. Create a figure with x = N SNPs and y = assigned pedigree
+theretically if this works we should either see data top out at a number of SNPs or yield a bell-like curve 
+where the peak is the desired input 
+
+  - why a function? We should repeat this test for each pedigree group (ie F0 + F1, F1_low_Broodstock + F12_low_Offpsring, etc.)
+
+```{r Pedtest}
+
+Pedtest <- function(GenoM, LifeHistData, threshold.LLR, min.LLR) { # start of fxn
+  
+  x <- data.frame(seq(10, 70, by=2))# to 100 every 10
+
+  pedtest.raw           <- data.frame(matrix(ncol = 3))
+  colnames(pedtest.raw) <- c('num_SNPs', 'uniq_pedigree', 'mean_LRRpair')
+  
+  pedtest.out           <- data.frame(matrix(ncol = 3)) # create dataframe to save cumunalitively during for loop
+  colnames(pedtest.out) <- c('num_SNPs', 'uniq_pedigree', 'mean_LRRpair') # names for comuns in the for loop
+  
+  # for loop for number of SNPs, repeating sequoia for each
+for (i in 1:nrow(x)) { # start of i for loop
+  
+  num_SNPs      <- x[i,] # the main call here, 1:100 repeating this loop
+  randomSNPs    <- array(sample(c(sample(1:ncol(GenoM), num_SNPs, replace = TRUE)))) # call random n.SNPs from the matrix
+  reduced_GenoM <- GenoM[,randomSNPs] # truncate the GenoM by the i number of randomSNPs
+  
+  run.sequoia <- sequoia(GenoM = reduced_GenoM,
+                               LifeHistData = LifeHistData, 
+                               SeqList = NULL,
+                               Module = "par", # just parent offspring assignment
+                               Err = 0.005, #1e-04,
+                               # threshold for log 10 likelihood (LLR) between a proposed relationship versus unrelated
+                               Tfilter = threshold.LLR, 
+                               # minimum LLR required for acceptance of proposed relationship relative to the next most likely
+                               Tassign = min.LLR,
+                               Complex = "full",
+                               Herm = "A",
+                               UseAge = "yes",
+                               ErrFlavour = "version2.9",
+                               quiet = TRUE,
+                               CalcLLR = TRUE
+                               ) 
+  
+  df.loop       <- data.frame(run.sequoia$PedigreePar %>% select(id, LLRpair) %>% na.omit())
+  uniq_pedigree <- nrow(df.loop)
+  mean_LRRpair <- mean(df.loop$LLRpair)
+  
+  
+  pedtest.raw$num_SNPs      <- num_SNPs
+  pedtest.raw$uniq_pedigree <- uniq_pedigree
+  pedtest.raw$mean_LRRpair  <- mean_LRRpair
+
+  
+  pedtest.out <- rbind(pedtest.out, pedtest.raw) %>% na.omit()
+  
+      } # end of i for loop
+
+  # plot it 
+  
+  xint        <- (pedtest.out %>% filter(mean_LRRpair == max(mean_LRRpair)))$num_SNPs
+  scaleFactor <- max(pedtest.out$uniq_pedigree) / max(pedtest.out$mean_LRRpair)
+  loess.plot  <- ggplot(pedtest.out, aes(x=num_SNPs)) +
+                    geom_smooth(aes(y=uniq_pedigree), method="loess", col="grey60", se=F) +
+                    geom_smooth(aes(y=mean_LRRpair * scaleFactor), method="loess", col="grey20", se=F) +
+                    scale_y_continuous(name="uniq_pedigree", sec.axis=sec_axis(~./scaleFactor, name="mean_LRRpair")) +
+                    geom_vline(xintercept = xint) + 
+                    theme_bw()
+
+  return(list(output  = pedtest.out,
+              plot    = loess.plot))
+
+} #end of of fxn
+
+```
+
+
+
+below I wrote a for loop that is iterated (bootstrapped) 100 times each time calling 50 random SNPs 
+of the vcf file, this outputs to a cumulative table to truncate parentage assignment by the best log liklihood result (LLR)
+
+## BootPed
+
+**Objective:** Run a custom function ```BootPed``` for the user to run a bootstrapped ```sequoia``` parentage assignment 
+based on the number of SNPs and number of iterations. 
+
+**inputs:** the user assigns the target full matrix (all SNPs included) and life history metadata, and chooses a cutoff for the number of input SNPs and number of times to run ```sequoia```. 
+
+**outputs:** pedigree.raw, pedigree.summary, and pedigree.final. 
+  
+  * Raw - dataframe with each pedigree output from all sequoia runs, a true cumulative output table. Therefore one should expect multiple results for a given individual. This dataframe contains the dam and sire assignment with the log likelihood ratio for each offspring. 
+  
+  * Summary - dataframe with the sum absolute log liklihood ratio for all dam and sire assignments grouped by id. Importantly we also overlay the columns 'dam.batch', 'sire.batch', and 'Fertilization.pairs'! 'batch' numbers represent the ids for each manual batch fertilization - menaing the controlled fertilizations of eggs (dams) and sperm (sires) for which we have a prior knowledge of **expected pairs**. Therefore overlay batch number between a sire and dam suggests a TRUE pair, whereas if dam and sire assignment does not have a common batch number then we have no evidence of this pair. **we ultimately target all pedigrees to reflect expected pairs**
+  
+  * Final - dataframe with a single dam+sire pairing for each offspring id, the threshold for this being two criteria: (1) must be TRUE for 'Fertilization.pair' (2) highest LLR for each id
+
+```{r pedigree function 'SequoiaBootPed'}
+
+SequoiaBootPed <- function(GenoM, LifeHistData, threshold.LLR, min.LLR, n.SNPs, n.bootstrap) {
+  
+  pedigree.raw           <- data.frame(matrix(ncol = 8)) # create dataframe to save cumunalitively during for loop
+  colnames(pedigree.raw) <- c('id', 'loci', 'n.loci', 'LLRpair', 'dam', 'LLRdam', 'sire' , 'LLRsire') # names for comuns in the for loop
+
+  for (i in 1:n.bootstrap) { # n.bootstrap, number of times the for loop is iterated
+                    # call n.SNPs from the matrix
+                    randomSNPs  <- array(sample(c(sample(1:ncol(GenoM), n.SNPs, replace = TRUE))))
+                    # truncate the GenoM by the column numbers in randomSNPs
+                    bootstrap_GenoM <- GenoM[,randomSNPs]
+                    SNP_IDs            <- paste0(colnames(bootstrap_GenoM), collapse=", ")
+                    # run seqquoia for these 50 SNPs
+                    
+                    bootstrap.sequoia <- sequoia(
+                                                GenoM = bootstrap_GenoM,
+                                                LifeHistData = LifeHistData, 
+                                                SeqList = NULL,
+                                                # most comp intensive, run everything
+                                                Module = "par", # just parent offspring assignment
+                                                Err = 0.005, #1e-04,
+                                                # threshold for log 10 likelihood (LLR) between a proposed relationship versus unrelated
+                                                Tfilter = threshold.LLR, 
+                                                # minimum LLR required for acceptance of proposed relationship relative to the next most likely
+                                                Tassign = min.LLR,
+                                                # MaxSibshipSize = 100,
+                                                # breeding system complexity
+                                                Complex = "full",
+                                                Herm = "A",
+                                                UseAge = "yes",
+                                                ErrFlavour = "version2.9",
+                                                quiet = TRUE,
+                                                CalcLLR = TRUE
+                                                ) 
+                  # add results from sequoia to cumulative table 
+                   df_loop      <- data.frame(bootstrap.sequoia$PedigreePar %>% 
+                                           select(id, dam, sire, LLRpair, LLRdam, LLRsire) %>%  
+                                           na.omit()) %>% 
+                                   mutate(loci   = SNP_IDs,
+                                     n.loci = ncol(bootstrap_GenoM))
+                   pedigree.raw <- rbind(pedigree.raw, df_loop) %>% na.omit() #bind to a cumulative list dataframe
+                   } # end for loop                   
+# OUTSIDE FOR LOOP
+# pedigree.raw  - contains the SNPs called for each assignment LLRdam and LLRsire (log10 liklihood ratio of 
+# the female being mother and male being father) and LLRpair for the parental pair verusthe next most likley # configuration between the three individuals (offspring dam and)
+
+
+# filter the raw file so that only actal parents can be dams and sires
+# pedigree.summary - insert a TRUE FALSE column 'Fertilization_pairs' for those dam and sire
+# assignments that are true batch pairs TRUE or that were not manually fertilized FALSE
+# objective is to achieve all TRUE values
+# dataframe Master.Parentage.listed.Dams and Master.Parentage.listed.Sires is in a chunk at 
+# the start of this script - edit and rename for ease of merging with the raw pedigree df
+Dams  <- Master.Parentage.listed.Dams %>% select(id,dam.batch) %>% rename(dam = id)
+Sires <- Master.Parentage.listed.Sires %>% select(id,sire.batch) %>% rename(sire = id)
+pedigree.merge.dams       <- merge(as.data.frame(pedigree.raw), Dams)
+pedigree.merge.dams.sires <- merge(pedigree.merge.dams, Sires)
+  
+pedigree.summary <- pedigree.merge.dams.sires %>% 
+                          mutate(Fertilization_pairs =
+                            sapply(seq_len(nrow(.)), 
+                                   function(i) {
+                                      set1 <- as.numeric(unlist(strsplit(as.character(sire.batch[i]),", ")))
+                                      set2 <- as.numeric(unlist(strsplit(as.character(dam.batch[i]),", ")))
+                                      any(set1 %in% set2)
+                                   })
+                                 )
+  
+  
+# pedigree.final  - outputs the three columns needed for CalcPairLL in sequoia
+# truncates the 'raw' file above for just a single id per row, as that with the GREATEST absLLRtotal
+pedigree.final    <- pedigree.summary %>% 
+                            group_by(id) %>% # group by id - there are mutliple occurances of pedigree assign for ids!
+                            dplyr::top_n(1, LLRpair) %>%  # take the best hit essential, highest LLR total
+                            dplyr::select(id, dam, sire, LLRpair, Fertilization_pairs, loci) %>% # select the target columns for next sequoia run
+                            distinct(id, .keep_all = TRUE) # there are cases at which there are duplicates with the same absLLR, here delete the dplicate taking one
+# Now we want to ensure we have pedigree results for all target offspring 
+# to do this, obtian an integer for the number of samples that are offspring 
+# lets leverage BirthYear of the LifeHist dataset - here our LOWEST birthyear ALWAYS (check this!)
+# represents the parental broodstock, whereas NO OFFSPRING SHARE BIRTHYEAR WITH THE PARENTS (or shouldnt, check this!)
+# below we obtain 'offspring.n' as the integer for the number of rows that are offspring
+# The minmumum birthyear is attribute with the parents - we
+offspring.n <- nrow(LifeHistData %>% filter(!BirthYear %in% min(BirthYear)))
+
+
+if ( length(unique(pedigree.summary$id)) < offspring.n) {# TRUE = not enough bootstrap runs 
+    
+    print(paste0("Predigree summary: ",
+                 length(unique(pedigree.summary$id)), 
+                 "/", 
+                 offspring.n, 
+                 " offspring with pedigree assignment; ",
+                 nrow(pedigree.final %>% filter(Fertilization_pairs %in% 'TRUE')),
+                 "/",
+                 nrow(pedigree.final),
+                 " unique pedigree assignments are TRUE fertilized pairs"))
+  
+    # print(paste0("Edit the n.SNP or n.bootstrap call for better pedigree"))
+    print(paste0("Run GetMaybeRelBootPed to fill the gaps!"))
+    
+    
+  } else {
+    
+    print(paste0("Predigree summary: ",
+                 length(unique(pedigree.summary$id)), 
+                 "/", 
+                 offspring.n, 
+                 " offspring with pedigree assignment; ",
+                 nrow(pedigree.final %>% filter(Fertilization_pairs %in% 'TRUE')),
+                 "/",
+                 nrow(pedigree.final),
+                 " TRUE fertilized pairs"))
+    
+    print(paste0("Proceed, all offspring have at least 1 pedigree assignment"))
+  }
+
+return(list(raw     = pedigree.raw, 
+            summary = pedigree.summary,
+            final   = pedigree.final))
+
+} # end function
+```
+
+
+
+```{r GetMaybeRelBootPed}
+
+GetMaybeRelBootPed <- function(Sequoia_pedigree, 
+                               GenoM, 
+                               LifeHistData, 
+                               # threshold.LLR, 
+                               # min.LLR, 
+                               n.SNPs 
+                               # n.bootstrap # old version ran static number of times, scratch this run until finished
+                               ) {
+  
+  # file to wroite getmayberel outputs to
+  getmaybetrio_raw           <- data.frame(matrix(ncol = 6)) # create dataframe to save cumunalitively during for loop
+  colnames(getmaybetrio_raw) <- c('id', 'parent1', 'parent2', 'LLRpair', 'n.loci', 'loci') # names for comuns in the for loop
+  # mock output file for the contingency statement
+  pedigree_out               <- data.frame(matrix(ncol = 6))
+  colnames(pedigree_out)     <-c('id', 'dam', 'sire', 'LLRpair', 'n.loci', 'loci')
+
+  # old version ran a static number of times, scratch this we want to run until finished
+  # for (i in 1:n.bootstrap) { # n.bootstrap, number of times the for loop is iterated
+    
+  # criteria to understand how many offspring are not assigned pedigree to keep looping through GetMaybeRel
+  offspring.n <- nrow( # the number of UNIQUE ids needed in the pedigree_out file to be done!
+                      LifeHistData %>% 
+                        dplyr::filter(!(BirthYear == min(LifeHistData$BirthYear) |  # omit occurnaces of F0s (if any!)
+                                        id %in% Sequoia_pedigree$id) # AND those already in the pedigree
+                                      )
+                     )
+  
+
+  if (nrow(pedigree_out) < offspring.n) {# TRUE, gaps to fill meaning offspring without pedigree assignment, run GetMaybeRel 
+    # NOte: as long as we need more than 1 unique id for pedigree (the mock pedigree_out matrix has 1 blank row initially) then we are good for this version
+    
+    # IMPORTTAT the while loop repeadely runs the data until pedigree_out has at least the number of rows as offspring.n
+    while (nrow(pedigree_out) < offspring.n) {
+    
+          # call n.SNPs from the matrix
+          randomSNPs  <- array(sample(c(sample(1:ncol(GenoM), n.SNPs, replace = TRUE))))
+          # truncate the GenoM by the column numbers in randomSNPs
+          bootstrap_GenoM <- GenoM[,randomSNPs]
+          SNP_IDs         <- paste0(colnames(bootstrap_GenoM), collapse=", ")
+          #un getmayberel
+          run.getmayberel <- GetMaybeRel(
+                                  GenoM = bootstrap_GenoM, # F0BF1O.GenoM_final,
+                                  SeqList = NULL,
+                                  Pedigree = as.data.frame(Sequoia_pedigree %>% #F0BF1O.pedigree.final %>% 
+                                                             select(id, dam, sire)),
+                                  LifeHistData = LifeHistData,#F0BF1O.LifeHistData,
+                                  AgePrior = NULL,
+                                  Module = "par",
+                                  Complex = "full",
+                                  Herm = "A",
+                                  Err = 1e-04,
+                                  ErrFlavour = "version2.9",
+                                  Tassign = 0.1, # threshold.LLR
+                                  Tfilter = -2, # min.LLR
+                                  # Complex = "full",
+                                  #MaxPairs = 7 * nrow(GenoM),
+                                  quiet = TRUE,
+                                  ParSib = NULL,
+                                  MaxMismatch = NA
+                                )
+          #run.getmayberel$MaybePar # view it
+                  # add results from getmayberel to cumulative table 
+                  if (length(run.getmayberel$MaybeTrio) > 0) { # if the length of the output is > 0 (results!) do the following
+                      df_loop <- data.frame(run.getmayberel$MaybeTrio %>% 
+                                             dplyr::select(id, parent1, parent2, LLRpair) %>%  
+                                             # na.omit()) %>% 
+                                             mutate(loci   = SNP_IDs,
+                                                    n.loci = ncol(bootstrap_GenoM)))
+                     getmaybetrio_raw <- rbind(getmaybetrio_raw, df_loop) %>% na.omit() #bind to a cumulative list dataframe
+                     
+                     
+                     maybetrio_out <- getmaybetrio_raw %>% # get unique ids for the top hit of LLRpair
+                                           group_by(id) %>% 
+                                           top_n(1, LLRpair) 
+
+                     parent1 <- maybetrio_out %>%  ungroup() %>% dplyr::select(parent1) %>% unique()
+                     parent2 <- maybetrio_out %>%  ungroup() %>% dplyr::select(parent2) %>% unique()
+                              
+                     parent1.sex <- merge(parent1, 
+                                         (LifeHistData %>%  
+                                                dplyr::select(id, Sex) %>% 
+                                                dplyr::filter(id %in% 
+                                                                parent1$parent1) %>% 
+                                                dplyr::rename(parent1=id)), by = 'parent1') %>% 
+                                                dplyr::rename(sex.parent1 = Sex)
+                              
+                              
+                     parent2.sex <- merge(parent2, 
+                                         (LifeHistData %>%  
+                                               dplyr::select(id, Sex) %>% 
+                                               dplyr::filter(id %in% parent2$parent2) %>% 
+                                               dplyr::rename(parent2=id)), by = 'parent2') %>% 
+                                               dplyr::rename(sex.parent2 = Sex)
+                              
+                      maybetrio_out.sex_1   <- merge(maybetrio_out, parent1.sex)
+                      maybetrio_out.sex_1_2 <- merge(maybetrio_out.sex_1, parent2.sex)
+                              
+                      pedigree_loop <- maybetrio_out.sex_1_2 %>% 
+                                              dplyr::mutate(dam  = # assign parent 1 or parent 2 as dam based on criteria below (1 = dam, female)
+                                                             case_when(
+                                                                      ((sex.parent1 == 1 | sex.parent1 == 4) & sex.parent2 != 1) ~ parent1,
+                                                                      ((sex.parent2 == 1 | sex.parent2 == 4) & sex.parent1 != 1) ~ parent2),
+                                                            sire = # assign parent 1 or parent 2 as sire based on criteria below (2 = sire, male)
+                                                             case_when(
+                                                                      (dam == parent1) ~ parent2,
+                                                                      (dam == parent2) ~ parent1)) %>% 
+                                              dplyr::select(id, dam, sire, LLRpair, n.loci, loci)   
+                      pedigree_out <- rbind(pedigree_out, pedigree_loop)  %>% #bind to a cumulative list dataframe
+                                            na.omit() %>% # remove NA (at the start of making the matrix first row is NA
+                                            dplyr::group_by(id) %>% # group by id, objective to have one output id per row
+                                            dplyr::top_n(1, LLRpair) %>% # if multiple ids, take the one with top LLR for the trio pedigree
+                                            distinct(id, .keep_all = TRUE) # possible to have the same LLRpair value and multiple ids,here delete ,multiples taking one
+                      
+                   } else { # there is no output from this run of getmaybe rel
+                     # < nothing here, if GetMaybe rel has no output just run again! >
+                     # <getmaybetrio_raw will be NA >
+                   } # close the if else for any output of getmayberel
+          
+    } # close the while loop
+    
+  # } # end of for statement the sole purpose is to fire up the while loop
+  } else { # length(unique(getmaybetrio_raw$id)) < offspring.n
+   # if this works correctly, we no proceed to return() given that we now ran getmayberel enough to get pedigrees
+  }
+# OUTSIDE FOR LOOP
+                
+return(list(raw = getmaybetrio_raw,
+            out  = pedigree_out))
+
+} # end function          
+
+```
+ 
+## SequoiaBootPed Run
+
+**Important notes about inputs**
+
+* **n.SNP:** It's important to note that while fewer loci may result in more pedigree assignments, the accuracy of these assignments may be compromised. For optimal results, it is recommended to use a sufficient number of high-quality, independent SNPs to balance between assignment rate and accuracy 
+  - (a) Reduced stringency: With fewer loci, the likelihood thresholds for assigning relationships become less stringent, allowing more potential relationships to be considered 
+  - (b) Increased false positives: A smaller number of loci may lead to an increased rate of false-positive assignments, as there is less genetic information to discriminate between true and spurious relationships 
+  - (c) Overestimation of relatedness: Fewer loci can result in overestimation of relatedness, particularly for more distant relationships like cousins or grandparent-grandchild pairs
+
+* first sanity check that the matrix == life history data, edit if necessary 
+
+```{r SequoiaBootPed prep}
+
+# FIRST SANITY CHECK THAT GENOM HAS ALL IDS OF LIFEHISTDATA
+
+
+# F0 thorugh F3 LOW and MODERATE only!!
+sort(rownames(All_LOW_MOD.GenoM)) == sort(All_LOW_MOD.LifeHistData$id) # falses here
+All_LOW_MOD.GenoM_final <-  All_LOW_MOD.GenoM[row.names(All_LOW_MOD.GenoM)  %in% All_LOW_MOD.LifeHistData$id, ] # force it
+sort(rownames(All_LOW_MOD.GenoM_final)) == sort(All_LOW_MOD.LifeHistData$id) # now true
+
+
+# F0 AND F1 OFFPSRING ALL   ::::::::::::::::::::::::::::::::::::::::::
+sort(rownames(F0BF1O.GenoM)) == sort(F0BF1O.LifeHistData$id) # falses here
+F0BF1O.GenoM_final <-  F0BF1O.GenoM[row.names(F0BF1O.GenoM)  %in% F0BF1O.LifeHistData$id, ] # force it
+sort(rownames(F0BF1O.GenoM_final)) == sort(F0BF1O.LifeHistData$id) # now true
+
+
+# F1 AND F2 OFFPSRING (treatment specific)   :::::::::::::::::::::::::
+# low
+sort(rownames(F1BF2O_LOW.GenoM)) == sort(F1BF2O_LOW.LifeHistData$id) # falses here
+F1BF2O_LOW.GenoM_final <-  F1BF2O_LOW.GenoM[row.names(F1BF2O_LOW.GenoM)  %in% F1BF2O_LOW.LifeHistData$id, ] # force it
+sort(rownames(F1BF2O_LOW.GenoM_final)) == sort(F1BF2O_LOW.LifeHistData$id) # now true
+
+# moderate
+sort(rownames(F1BF2O_MOD.GenoM)) == sort(F1BF2O_MOD.LifeHistData$id) # falses here
+F1BF2O_MOD.GenoM_final <-  F1BF2O_MOD.GenoM[row.names(F1BF2O_MOD.GenoM)  %in% F1BF2O_MOD.LifeHistData$id, ] # force it
+sort(rownames(F1BF2O_MOD.GenoM_final)) == sort(F1BF2O_MOD.LifeHistData$id) # now true
+
+# high
+sort(rownames(F1BF2O_HIGH.GenoM)) == sort(F1BF2O_HIGH.LifeHistData$id) # falses here
+F1BF2O_HIGH.GenoM_final <-  F1BF2O_HIGH.GenoM[row.names(F1BF2O_HIGH.GenoM)  %in% F1BF2O_HIGH.LifeHistData$id, ] # force it
+sort(rownames(F1BF2O_HIGH.GenoM_final)) == sort(F1BF2O_HIGH.LifeHistData$id) # now true
+
+# F2 AND F3 OFFPSRING (treatment specific)   :::::::::::::::::::::::::
+# low
+sort(rownames(F2BF3O_LOW.GenoM)) == sort(F2BF3O_LOW.LifeHistData$id) # falses here
+F2BF3O_LOW.GenoM_final <-  F2BF3O_LOW.GenoM[row.names(F2BF3O_LOW.GenoM)  %in% F2BF3O_LOW.LifeHistData$id, ] # force it
+sort(rownames(F2BF3O_LOW.GenoM_final)) == sort(F2BF3O_LOW.LifeHistData$id) # now true
+
+# moderate
+sort(rownames(F2BF3O_MOD.GenoM)) == sort(F2BF3O_MOD.LifeHistData$id) # falses here
+F2BF3O_MOD.GenoM_final <-  F2BF3O_MOD.GenoM[row.names(F2BF3O_MOD.GenoM)  %in% F2BF3O_MOD.LifeHistData$id, ] # force it
+sort(rownames(F2BF3O_MOD.GenoM_final)) == sort(F2BF3O_MOD.LifeHistData$id) # now true
+
+# high
+sort(rownames(F2BF3O_HIGH.GenoM)) == sort(F2BF3O_HIGH.LifeHistData$id) # falses here
+F2BF3O_HIGH.GenoM_final <-  F2BF3O_HIGH.GenoM[row.names(F2BF3O_HIGH.GenoM)  %in% F2BF3O_HIGH.LifeHistData$id, ] # force it
+sort(rownames(F2BF3O_HIGH.GenoM_final)) == sort(F2BF3O_HIGH.LifeHistData$id) # now true
+
+
+# SequoiaBootPed(GenoM, LifeHistData, outputstring)
+sort(rownames(F1BF2O_MOD.GenoM)) == sort(F1BF2O_MOD.LifeHistData$id)
+F1BF2O_MOD.GenoM_final <-  F1BF2O_MOD.GenoM[row.names(F1BF2O_MOD.GenoM)  %in% F1BF2O_MOD.LifeHistData$id, ]
+sort(rownames(F1BF2O_MOD.GenoM_final)) == sort(F1BF2O_MOD.LifeHistData$id)
+
+```
+
+* run SequoiaBootPed for all low and moderate animals F0 through F3
+
+inputs:
+  - GenoM = All_LOW_MOD.GenoM_final
+  - LifeHistData = All_LOW_MOD.LifeHistData
+  - threshold.LLR = -2
+  - min.LLR = 0.1
+  - n.SNP = 50
+  - n.bootstrap = 20
+
+output: 
+[1] "Predigree summary: 265/278 offspring with pedigree assignment; 131/265 pedigree assignments with highest abs LLR are TRUE fertilized pairs"
+[1] "Edit the n.SNP or n.bootstrap call for better pedigree"
+
+
+```{r SequoiaBootPed run all low and moderate individuals}
+
+
+# F0 AND F1 OFFPSRING ALL   ::::::::::::::::::::::::::::::::::::::::::
+All_Low_Mod.sequoia <- SequoiaBootPed(
+                         All_LOW_MOD.GenoM_final, # GenoM
+                         All_LOW_MOD.LifeHistData, # LifeHistData
+                         -2,# Tfilter threshold.LLR between prop relationshup versus unrelated
+                         0.2,# Tassign min.LLR for accept of proposed rel. relative to next most likely
+                         50, # n.SNP
+                         150 # n.bootstrap
+                        )
+
+# data files
+# View(All_Low_Mod.pedigree.raw)
+nrow(All_LOW_MOD.LifeHistData) # 303 individuals to start, includes F0 broodstock that will not have pedigree
+nrow(All_LOW_MOD.LifeHistData %>% filter(BirthYear == 1)) # 25 F0 broodstock (303 - 25 == 278 individuals that can have pedigree!)
+length(unique(All_Low_Mod.sequoia$raw$id)) # 278 - the raw file shows that pedigree was achieved for each individual, but...
+length(unique(All_Low_Mod.sequoia$summary$id)) # 265 - the summary file filters for "real" data meaning actual  putative parents
+
+All_Low_Mod.pedigree.raw       <- as.data.frame(All_Low_Mod.sequoia$raw)
+rownames(All_Low_Mod.pedigree.raw) <- NULL # renomve rownames
+
+All_Low_Mod.pedigree.summary   <- as.data.frame(All_Low_Mod.sequoia$summary)
+rownames(All_Low_Mod.pedigree.summary) <- NULL # renomve rownames
+
+All_Low_Mod.pedigree.summary <- apply(All_Low_Mod.pedigree.summary,2,as.character) # need to do this to output the list of batches!
+
+
+All_Low_Mod.pedigree.final <- as.data.frame(All_Low_Mod.pedigree.summary) %>% 
+                            group_by(id) %>% # group by id - there are mutliple occurances of pedigree assign for ids!
+                            # filter(Fertilization_pairs %in% 'TRUE') %>% 
+                            dplyr::top_n(1, absLLRtotal) %>%  # take the best hit essential, highest LLR total
+                            dplyr::select(id, dam, sire, absLLRtotal, dam.batch, sire.batch, Fertilization_pairs, loci) %>% # select the target columns for next sequoia run
+                            distinct(id, .keep_all = TRUE) # there are cases at which there are duplicates with the same absLLR, here delete the dplicate taking one
+
+rownames(All_Low_Mod.pedigree.final) <- NULL # renomve rownames
+nrow(All_Low_Mod.pedigree.final) # 265
+write.csv(All_Low_Mod.pedigree.final, "RAnalysis/Output/Popgen/pedigree/All_Low_v_Moderate_final.csv")
+
+```
+
+
+* run SequoiaBootPed for F0BF1J
+
+inputs:
+  - GenoM = F0BF1O.GenoM_final
+  - LifeHistData = F0BF1O.LifeHistData
+  - threshold.LLR = -2
+  - min.LLR = 0.1
+  - n.SNP = 50
+  - n.bootstrap = 100
+
+output: 
+[1] "Predigree summary: 102/102 offspring with pedigree assignment; 83/102 TRUE fertilized pairs"
+[1] "Proceed, all offspring have at least 1 pedigree assignment"
+
+```{r Pedigree construction: F0BF1O}
+
+
+F0BF1O.Pedtest <- Pedtest(F0BF1O.GenoM_final, F0BF1O.LifeHistData, -2, 0.2)
+F0BF1O.Pedtest$out # view the end product data, numb of SNPs and LLR results
+F0BF1O.Pedtest$plot # iew - vertical line x int is the highest mean LLR, not related to # pedigrees assigned
+
+pdf("RAnalysis/Output/Popgen/pedigree/F0BF1O/F0BF1O_Pedtest.pdf", width = 4, height = 4)
+print(F0BF1O.Pedtest$plot)
+dev.off()
+
+# F0 AND F1 OFFPSRING ALL   ::::::::::::::::::::::::::::::::::::::::::
+F0BF1O.sequoia <- BootPed(
+                         F0BF1O.GenoM_final, # GenoM
+                         F0BF1O.LifeHistData, # LifeHistData
+                         -2,# threshold.LLR
+                         0.1,# min.LLR
+                         50, # n.SNP
+                         100 # n.bootstrap
+                        )
+
+# data files
+F0BF1O.pedigree.raw       <- as.data.frame(F0BF1O.sequoia$raw)
+rownames(F0BF1O.pedigree.raw) <- NULL # renomve rownames
+
+F0BF1O.pedigree.summary   <- as.data.frame(F0BF1O.sequoia$summary)
+rownames(F0BF1O.pedigree.summary) <- NULL # renomve rownames
+F0BF1O.pedigree.summary <- apply(F0BF1O.pedigree.summary,2,as.character) # need to do this to output the list of batches!
+
+
+# F0BF1O.pedigree.final     <- as.data.frame(F0BF1O.sequoia$final)
+# rownames(F0BF1O.pedigree.final) <- NULL # renomve rownames
+
+# output
+write.csv(F0BF1O.pedigree.raw, "RAnalysis/Output/Popgen/pedigree/F0BF1O/F0BF1O_raw.csv")
+write.csv(F0BF1O.pedigree.summary, "RAnalysis/Output/Popgen/pedigree/F0BF1O/F0BF1O_summary.csv")
+# write.csv(F0BF1O.pedigree.final, "RAnalysis/Output/Popgen/pedigree_sequoia/F0BF1O/F0BF1O_final.csv")
+
+F0BF1O.pedigree.final <- as.data.frame(F0BF1O.pedigree.summary) %>% 
+                            group_by(id) %>% # group by id - there are mutliple occurances of pedigree assign for ids!
+                            filter(Fertilization_pairs %in% 'TRUE') %>% 
+                            dplyr::top_n(1, LLRpair ) %>%  # take the best hit essential, highest LLR total 
+                            distinct(id, .keep_all = TRUE) %>% 
+                            dplyr::select(id, dam, sire, LLRpair , dam.batch, sire.batch, Fertilization_pairs, loci) # select the target columns for next sequoia run
+rownames(F0BF1O.pedigree.final) <- NULL # renomve rownames
+nrow(F0BF1O.pedigree.final) # 102  DO NOT NEED TO RUN GETMAYBEREL!
+# write.csv
+write.csv(F0BF1O.pedigree.final, "RAnalysis/Output/Popgen/pedigree/F0BF1O/F0BF1O_final.csv")
+
+
+```
+
+
+* run SequoiaBootPed for F1BF2J LOW
+
+inputs:
+  - GenoM = F1BF2O_LOW.GenoM_final
+  - LifeHistData = F1BF2O_LOW.LifeHistData
+  - threshold.LLR = -2
+  - min.LLR = 0.1
+  - n.SNP = 50
+  - n.bootstrap = 100
+
+output: 
+  - Low
+    <insert here>
+  
+```{r Pedigree construction: F1BF2O LOW}
+
+
+F1BF2O_LOW.Pedtest <- Pedtest(F1BF2O_LOW.GenoM_final, F1BF2O_LOW.LifeHistData, -2, 0.2)
+F1BF2O_LOW.Pedtest$out
+F1BF2O_LOW.Pedtest$plot
+
+
+pdf("RAnalysis/Output/Popgen/pedigree/F1BF2O/Low/F1BF2O_LOW_Pedtest.pdf", width = 4, height = 4)
+print(F1BF2O_LOW.Pedtest$plot)
+dev.off()
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# F1 AND F2 OFFPSRING (treatment specific)   
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# low
+F1BF2O_LOW.sequoia <- SequoiaBootPed(
+                                     F1BF2O_LOW.GenoM_final, # GenoM
+                                     F1BF2O_LOW.LifeHistData, # LifeHistData
+                                     -2,# threshold.LLR
+                                     0.1,# min.LLR
+                                     50, # n.SNP
+                                     100 # n.bootstrap
+                                      )
+# run on 1/11/2025
+# [1] "Predigree summary: 32/32 offspring with pedigree assignment; 11/32 TRUE fertilized pairs"
+# [1] "Proceed, all offspring have at least 1 pedigree assignment"
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# data files
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# raw - all cumulative output
+F1BF2O_LOW.pedigree.raw       <- as.data.frame(F1BF2O_LOW.sequoia$raw)
+rownames(F1BF2O_LOW.pedigree.raw) <- NULL # renomve rownames
+
+
+
+# summary - those with actual broodstock as parents
+F1BF2O_LOW.pedigree.summary   <- as.data.frame(F1BF2O_LOW.sequoia$summary)
+rownames(F1BF2O_LOW.pedigree.summary) <- NULL # renomve rownames
+F1BF2O_LOW.pedigree.summary <- apply(F1BF2O_LOW.pedigree.summary,2,as.character) # need to do this to output the list of batches!
+
+
+
+# out - top LLR taking unique IDs
+F1BF2O_LOW.pedigree.out  <- as.data.frame(F1BF2O_LOW.pedigree.summary) %>% 
+                            group_by(id) %>% # group by id - there are mutliple occurances of pedigree assign for ids!
+                            # filter(Fertilization_pairs %in% 'TRUE') %>% 
+                            dplyr::top_n(1, LLRpair ) %>%  # take the best hit essential, highest LLR total 
+                            distinct(id, .keep_all = TRUE) %>% 
+                            dplyr::select(id, dam, sire, LLRpair , dam.batch, sire.batch, Fertilization_pairs, loci) # select the target columns for next sequoia run
+rownames(F1BF2O_LOW.pedigree.out) <- NULL # renomve rownames
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# which ids did not get pedigree???
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F1BF2O_LOW.LifeHistData %>% filter(!(BirthYear %in% min(BirthYear) |
+                                        id %in% F1BF2O_LOW.pedigree.out$id))
+# 6 rows, 6 ids did not, run et mayRel
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Run GetMaybeRelBootPed 
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F1BF2O_LOW.getmayberel <- GetMaybeRelBootPed(F1BF2O_LOW.pedigree.out, #sequoia pedigree output final
+                                             F1BF2O_LOW.GenoM_final, # GenoM, 
+                                             F1BF2O_LOW.LifeHistData, # LifeHistData, 
+                                             50#  n.SNPs, 
+                                             )
+F1BF2O_LOW.getmayberel.out <- as.data.frame(F1BF2O_LOW.getmayberel$out)
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# output
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+write.csv(F1BF2O_LOW.pedigree.raw, "RAnalysis/Output/Popgen/pedigree/F1BF2O/Low/F1BF2O_Low_SequoiaBootPed_raw.csv")
+write.csv(F1BF2O_LOW.pedigree.summary, "RAnalysis/Output/Popgen/pedigree/F1BF2O/Low/F1BF2O_Low_SequoiaBootPed_summary.csv")
+write.csv(F1BF2O_LOW.pedigree.out, "RAnalysis/Output/Popgen/pedigree/F1BF2O/Low/F1BF2O_Low_SequoiaBootPed_out.csv")
+write.csv(F1BF2O_LOW.getmayberel.out, "RAnalysis/Output/Popgen/pedigree/F1BF2O/Low/F1BF2O_Low_GetMaybeRelBootPed_out.csv")
+
+
+```
+
+* run SequoiaBootPed for F1BF2J MODERATE
+
+inputs:
+  - GenoM = F1BF2O_MOD.GenoM_final
+  - LifeHistData = F1BF2O_MOD.LifeHistData
+  - threshold.LLR = -2
+  - min.LLR = 0.1
+  - n.SNP = 50
+  - n.bootstrap = 100
+
+output: 
+ *  run on 2/7/2025
+[1] "Predigree summary: 35/46 offspring with pedigree assignment; 10/35 pedigree assignments with highest abs LLR are TRUE fertilized pairs"
+[1] "Edit the n.SNP or n.bootstrap call for better pedigree"
+
+```{r Pedigree construction:  F1BF2O MODERATE}
+
+
+F1BF2O_MOD.Pedtest <- Pedtest(F1BF2O_MOD.GenoM_final, F1BF2O_MOD.LifeHistData, -2, 0.2)
+F1BF2O_MOD.Pedtest$out
+F1BF2O_MOD.Pedtest$plot
+
+pdf("RAnalysis/Output/Popgen/pedigree/F1BF2O/Moderate/F1BF2O_MOD_Pedtest.pdf", width = 4, height = 4)
+print(F1BF2O_MOD.Pedtest$out)
+dev.off()
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# F1 AND F2 OFFPSRING (treatment specific)   
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# moderate
+F1BF2O_MOD.sequoia <- SequoiaBootPed(
+                              F1BF2O_MOD.GenoM_final, 
+                              F1BF2O_MOD.LifeHistData, # LifeHistData
+                              -2,# threshold.LLR
+                              0.1,# min.LLR
+                              50, # n.SNP
+                              100 # n.bootstrap
+                              )
+# run on 1/11/2025
+# [1] "Predigree summary: 38/46 offspring with pedigree assignment; 18/38 pedigree assignments with highest abs LLR are TRUE fertilized pairs"
+# [1] "Edit the n.SNP or n.bootstrap call for better pedigree"
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# data files
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# raw - all cumulative output
+F1BF2O_MOD.pedigree.raw       <- as.data.frame(F1BF2O_MOD.sequoia$raw)
+rownames(F1BF2O_MOD.pedigree.raw) <- NULL # renomve rownames
+
+
+
+# summary - those with actual broodstock as parents
+F1BF2O_MOD.pedigree.summary   <- as.data.frame(F1BF2O_MOD.sequoia$summary)
+rownames(F1BF2O_MOD.pedigree.summary) <- NULL # renomve rownames
+F1BF2O_MOD.pedigree.summary <- apply(F1BF2O_MOD.pedigree.summary,2,as.character) # need to do this to output the list of batches!
+
+
+
+# out - top LLR taking unique IDs
+F1BF2O_MOD.pedigree.out  <- as.data.frame(F1BF2O_MOD.pedigree.summary) %>% 
+                            group_by(id) %>% # group by id - there are mutliple occurances of pedigree assign for ids!
+                            # filter(Fertilization_pairs %in% 'TRUE') %>% 
+                            dplyr::top_n(1, LLRpair ) %>%  # take the best hit essential, highest LLR total 
+                            distinct(id, .keep_all = TRUE) %>% 
+                            dplyr::select(id, dam, sire, LLRpair , dam.batch, sire.batch, Fertilization_pairs, loci) # select the target columns for next sequoia run
+rownames(F1BF2O_MOD.pedigree.out) <- NULL # renomve rownames
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# which ids did not get pedigree???
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F1BF2O_MOD.LifeHistData %>% filter(!(BirthYear %in% min(BirthYear) |
+                                        id %in% F1BF2O_MOD.pedigree.out$id))
+# 11 rows, 11 ids did not, run et mayRel
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Run GetMaybeRelBootPed 
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F1BF2O_MOD.getmayberel <- GetMaybeRelBootPed(F1BF2O_MOD.pedigree.out, #sequoia pedigree output final
+                                             F1BF2O_MOD.GenoM_final, # GenoM, 
+                                             F1BF2O_MOD.LifeHistData, # LifeHistData, 
+                                             50#  n.SNPs, 
+                                             )
+
+F1BF2O_MOD.getmayberel.out <- as.data.frame(F1BF2O_MOD.getmayberel$out)
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# output
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+write.csv(F1BF2O_MOD.pedigree.raw, "RAnalysis/Output/Popgen/pedigree/F1BF2O/Moderate/F1BF2O_MOD_SequoiaBootPed_raw.csv")
+write.csv(F1BF2O_MOD.pedigree.summary, "RAnalysis/Output/Popgen/pedigree/F1BF2O/Moderate/F1BF2O_MOD_SequoiaBootPed_summary.csv")
+write.csv(F1BF2O_MOD.pedigree.out, "RAnalysis/Output/Popgen/pedigree/F1BF2O/Moderate/F1BF2O_MOD_SequoiaBootPed_out.csv")
+write.csv(F1BF2O_MOD.getmayberel.out, "RAnalysis/Output/Popgen/pedigree/F1BF2O/Moderate/F1BF2O_MOD_GetMaybeRelBootPed_out.csv")
+
+```
+
+* run SequoiaBootPed for F1BF2J HIGH
+
+inputs:
+  - GenoM = F1BF2O_HIGH.GenoM_final
+  - LifeHistData = F1BF2O_HIGH.LifeHistData
+  - threshold.LLR = -2
+  - min.LLR = 0.1
+  - n.SNP = 50
+  - n.bootstrap = 100
+
+output: 
+ *  run on 2/7/2025
+[1] "Pedigree summary: 24/33 offspring with pedigree assignment; 10/24 unique pedigree assignments are TRUE fertilized pairs"
+[1] "Run GetMaybeRelBootPed to fill the gaps!"
+
+```{r Pedigree construction: F1BF2O HIGH}
+
+
+
+F1BF2O_HIGH.Pedtest <- Pedtest(F1BF2O_HIGH.GenoM_final, F1BF2O_HIGH.LifeHistData, -2, 0.2)
+F1BF2O_HIGH.Pedtest$out
+F1BF2O_HIGH.Pedtest$plot
+
+pdf("RAnalysis/Output/Popgen/pedigree/F1BF2O/High/F1BF2O_HIGH_Pedtest.pdf", width = 4, height = 4)
+print(F1BF2O_HIGH.Pedtest$plot)
+dev.off()
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# F1 AND F2 OFFPSRING (treatment specific)   
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# high
+F1BF2O_HIGH.sequoia <- SequoiaBootPed(
+                              F1BF2O_HIGH.GenoM_final, 
+                              F1BF2O_HIGH.LifeHistData, # LifeHistData
+                              -2,# threshold.LLR
+                              0.1,# min.LLR
+                              50, # n.SNP
+                              100 # n.bootstrap
+                              )
+#  *  run on 2/7/2025
+# [1] "Pedigree summary: 24/33 offspring with pedigree assignment; 10/24 unique pedigree assignments are TRUE fertilized pairs"
+# [1] "Run GetMaybeRelBootPed to fill the gaps!"
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# data files
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# raw - all cumulative output
+F1BF2O_HIGH.pedigree.raw       <- as.data.frame(F1BF2O_HIGH.sequoia$raw)
+rownames(F1BF2O_HIGH.pedigree.raw) <- NULL # renomve rownames
+
+
+
+# summary - those with actual broodstock as parents
+F1BF2O_HIGH.pedigree.summary   <- as.data.frame(F1BF2O_HIGH.sequoia$summary)
+rownames(F1BF2O_HIGH.pedigree.summary) <- NULL # renomve rownames
+F1BF2O_HIGH.pedigree.summary <- apply(F1BF2O_HIGH.pedigree.summary,2,as.character) # need to do this to output the list of batches!
+
+
+
+# out - top LLR taking unique IDs
+F1BF2O_HIGH.pedigree.out  <- as.data.frame(F1BF2O_HIGH.pedigree.summary) %>% 
+                            group_by(id) %>% # group by id - there are mutliple occurances of pedigree assign for ids!
+                            # filter(Fertilization_pairs %in% 'TRUE') %>% 
+                            dplyr::top_n(1, LLRpair ) %>%  # take the best hit essential, highest LLR total 
+                            distinct(id, .keep_all = TRUE) %>% 
+                            dplyr::select(id, dam, sire, LLRpair , dam.batch, sire.batch, Fertilization_pairs, loci) # select the target columns for next sequoia run
+rownames(F1BF2O_HIGH.pedigree.out) <- NULL # renomve rownames
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# which ids did not get pedigree???
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F1BF2O_HIGH.LifeHistData %>% filter(!(BirthYear %in% min(BirthYear) |
+                                        id %in% F1BF2O_HIGH.pedigree.out$id))
+# 9 rows, 9 ids did not, run et mayRel
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Run GetMaybeRelBootPed 
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F1BF2O_HIGH.getmayberel <- GetMaybeRelBootPed(F1BF2O_HIGH.pedigree.out, #sequoia pedigree output final
+                                             F1BF2O_HIGH.GenoM_final, # GenoM, 
+                                             F1BF2O_HIGH.LifeHistData, # LifeHistData, 
+                                             50#  n.SNPs, 
+                                             )
+
+F1BF2O_HIGH.getmayberel.out <- as.data.frame(F1BF2O_HIGH.getmayberel$out)
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# output
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+write.csv(F1BF2O_HIGH.pedigree.raw, "RAnalysis/Output/Popgen/pedigree/F1BF2O/High/F1BF2O_HIGH_SequoiaBootPed_raw.csv")
+write.csv(F1BF2O_HIGH.pedigree.summary, "RAnalysis/Output/Popgen/pedigree/F1BF2O/High/F1BF2O_HIGH_SequoiaBootPed_summary.csv")
+write.csv(F1BF2O_HIGH.pedigree.out, "RAnalysis/Output/Popgen/pedigree/F1BF2O/High/F1BF2O_HIGH_SequoiaBootPed_out.csv")
+write.csv(F1BF2O_HIGH.getmayberel.out, "RAnalysis/Output/Popgen/pedigree/F1BF2O/High/F1BF2O_HIGH_GetMaybeRelBootPed_out.csv")
+```
+
+
+* run BootPed for F2BF3J LOW
+
+inputs:
+  - GenoM = F2BF3O_LOW.GenoM_final
+  - LifeHistData = F2BF3O_LOW.LifeHistData
+  - threshold.LLR = -2
+  - min.LLR = 0.1
+  - n.SNP = 50
+  - n.bootstrap = 100
+
+output: 
+ *  run on 2/7/2025
+[1] "Pedigree summary: 41/49 offspring with pedigree assignment; 8/41 unique pedigree assignments are TRUE fertilized pairs"
+[1] "Run GetMaybeRelBootPed to fill the gaps!"
+  
+```{r Pedigree construction: F2BF3O LOW}
+
+
+
+F2BF3O_LOW.Pedtest <- Pedtest(F2BF3O_LOW.GenoM_final, F2BF3O_LOW.LifeHistData, -2, 0.2)
+F2BF3O_LOW.Pedtest$out
+F2BF3O_LOW.Pedtest$plot
+
+pdf("RAnalysis/Output/Popgen/pedigree/F2BF3O/Low/F2BF3O_LOW_Pedtest.pdf", width = 4, height = 4)
+print(F2BF3O_LOW.Pedtest$plot)
+dev.off()
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# F3 OFFPSRING (treatment specific)   
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# low
+F2BF3O_LOW.sequoia <- SequoiaBootPed(
+                              F2BF3O_LOW.GenoM_final, 
+                              F2BF3O_LOW.LifeHistData,# LifeHistData
+                              -2,# threshold.LLR
+                              0.1,# min.LLR
+                              50, # n.SNP
+                              100)# n.bootstrap
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# data files
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# raw - all cumulative output
+F2BF3O_LOW.pedigree.raw       <- as.data.frame(F2BF3O_LOW.sequoia$raw)
+rownames(F2BF3O_LOW.pedigree.raw) <- NULL # renomve rownames
+
+
+
+# summary - those with actual broodstock as parents
+F2BF3O_LOW.pedigree.summary   <- as.data.frame(F2BF3O_LOW.sequoia$summary)
+rownames(F2BF3O_LOW.pedigree.summary) <- NULL # renomve rownames
+F2BF3O_LOW.pedigree.summary <- apply(F2BF3O_LOW.pedigree.summary,2,as.character) # need to do this to output the list of batches!
+
+
+
+# out - top LLR taking unique IDs
+F2BF3O_LOW.pedigree.out  <- as.data.frame(F2BF3O_LOW.pedigree.summary) %>% 
+                            group_by(id) %>% # group by id - there are mutliple occurances of pedigree assign for ids!
+                            # filter(Fertilization_pairs %in% 'TRUE') %>% 
+                            dplyr::top_n(1, LLRpair ) %>%  # take the best hit essential, LOWest LLR total 
+                            distinct(id, .keep_all = TRUE) %>% 
+                            dplyr::select(id, dam, sire, LLRpair , dam.batch, sire.batch, Fertilization_pairs, loci) # select the target columns for next sequoia run
+rownames(F2BF3O_LOW.pedigree.out) <- NULL # renomve rownames
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# which ids did not get pedigree???
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F2BF3O_LOW.LifeHistData %>% filter(!(BirthYear %in% min(BirthYear) |
+                                        id %in% F2BF3O_LOW.pedigree.out$id))
+# 8 rows, 8 ids did not, run et mayRel
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Run GetMaybeRelBootPed 
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F2BF3O_LOW.getmayberel <- GetMaybeRelBootPed(F2BF3O_LOW.pedigree.out, #sequoia pedigree output final
+                                             F2BF3O_LOW.GenoM_final, # GenoM, 
+                                             F2BF3O_LOW.LifeHistData, # LifeHistData, 
+                                             50#  n.SNPs, 
+                                             )
+
+F2BF3O_LOW.getmayberel.out <- as.data.frame(F2BF3O_LOW.getmayberel$out)
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# output
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+write.csv(F2BF3O_LOW.pedigree.raw, "RAnalysis/Output/Popgen/pedigree/F2BF3O/Low/F2BF3O_LOW_SequoiaBootPed_raw.csv")
+write.csv(F2BF3O_LOW.pedigree.summary, "RAnalysis/Output/Popgen/pedigree/F2BF3O/Low/F2BF3O_LOW_SequoiaBootPed_summary.csv")
+write.csv(F2BF3O_LOW.pedigree.out, "RAnalysis/Output/Popgen/pedigree/F2BF3O/Low/F2BF3O_LOW_SequoiaBootPed_out.csv")
+write.csv(F2BF3O_LOW.getmayberel.out, "RAnalysis/Output/Popgen/pedigree/F2BF3O/Low/F2BF3O_LOW_GetMaybeRelBootPed_out.csv")
+
+```
+
+
+* run BootPed for F2BF3J MODERATE
+
+inputs:
+  - GenoM = F2BF3O_MOD.GenoM_final
+  - LifeHistData = F2BF3O_MOD.LifeHistData
+  - threshold.LLR = -2
+  - min.LLR = 0.1
+  - n.SNP = 50
+  - n.bootstrap = 100
+
+output: 
+ *  run on 2/7/2025
+[1] "Predigree summary: 45/49 offspring with pedigree assignment; 7/45 unique pedigree assignments are TRUE fertilized pairs"
+[1] "Run GetMaybeRelBootPed to fill the gaps!"
+
+```{r Pedigree construction: F2BF3O MODERATE}
+
+
+
+F2BF3O_MOD.Pedtest <- Pedtest(F2BF3O_MOD.GenoM_final, F2BF3O_MOD.LifeHistData, -2, 0.2)
+F2BF3O_MOD.Pedtest$out
+F2BF3O_MOD.Pedtest$plot
+
+
+pdf("RAnalysis/Output/Popgen/pedigree/F2BF3O/Moderate/F2BF3O_MOD_Pedtest.pdf", width = 4, height = 4)
+print(F2BF3O_MOD.Pedtest$plot)
+dev.off()
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# F3 OFFPSRING (treatment specific)   
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# moderate
+F2BF3O_MOD.sequoia <- SequoiaBootPed(
+                              F2BF3O_MOD.GenoM_final, 
+                              F2BF3O_MOD.LifeHistData,# LifeHistData
+                              -2,# threshold.LLR
+                              0.1,# min.LLR
+                              50, # n.SNP
+                              100)# n.bootstrap
+
+#  *  run on 2/7/2025
+# [1] "Predigree summary: 45/49 offspring with pedigree assignment; 7/45 unique pedigree assignments are TRUE fertilized pairs"
+# [1] "Run GetMaybeRelBootPed to fill the gaps!"
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# data files
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# raw - all cumulative output
+F2BF3O_MOD.pedigree.raw       <- as.data.frame(F2BF3O_MOD.sequoia$raw)
+rownames(F2BF3O_MOD.pedigree.raw) <- NULL # renomve rownames
+
+
+
+# summary - those with actual broodstock as parents
+F2BF3O_MOD.pedigree.summary   <- as.data.frame(F2BF3O_MOD.sequoia$summary)
+rownames(F2BF3O_MOD.pedigree.summary) <- NULL # renomve rownames
+F2BF3O_MOD.pedigree.summary <- apply(F2BF3O_MOD.pedigree.summary,2,as.character) # need to do this to output the list of batches!
+
+
+
+# out - top LLR taking unique IDs
+F2BF3O_MOD.pedigree.out  <- as.data.frame(F2BF3O_MOD.pedigree.summary) %>% 
+                            group_by(id) %>% # group by id - there are mutliple occurances of pedigree assign for ids!
+                            # filter(Fertilization_pairs %in% 'TRUE') %>% 
+                            dplyr::top_n(1, LLRpair ) %>%  # take the best hit essential, MODest LLR total 
+                            distinct(id, .keep_all = TRUE) %>% 
+                            dplyr::select(id, dam, sire, LLRpair , dam.batch, sire.batch, Fertilization_pairs, loci) # select the target columns for next sequoia run
+rownames(F2BF3O_MOD.pedigree.out) <- NULL # renomve rownames
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# which ids did not get pedigree???
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F2BF3O_MOD.LifeHistData %>% filter(!(BirthYear %in% min(BirthYear) |
+                                        id %in% F2BF3O_MOD.pedigree.out$id))
+# 4 rows, 4 ids did not, run et mayRel
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Run GetMaybeRelBootPed 
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F2BF3O_MOD.getmayberel <- GetMaybeRelBootPed(F2BF3O_MOD.pedigree.out, #sequoia pedigree output final
+                                             F2BF3O_MOD.GenoM_final, # GenoM, 
+                                             F2BF3O_MOD.LifeHistData, # LifeHistData, 
+                                             50#  n.SNPs, 
+                                             )
+
+F2BF3O_MOD.getmayberel.out <- as.data.frame(F2BF3O_MOD.getmayberel$out)
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# output
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+write.csv(F2BF3O_MOD.pedigree.raw, "RAnalysis/Output/Popgen/pedigree/F2BF3O/Moderate/F2BF3O_MOD_SequoiaBootPed_raw.csv")
+write.csv(F2BF3O_MOD.pedigree.summary, "RAnalysis/Output/Popgen/pedigree/F2BF3O/Moderate/F2BF3O_MOD_SequoiaBootPed_summary.csv")
+write.csv(F2BF3O_MOD.pedigree.out, "RAnalysis/Output/Popgen/pedigree/F2BF3O/Moderate/F2BF3O_MOD_SequoiaBootPed_out.csv")
+write.csv(F2BF3O_MOD.getmayberel.out, "RAnalysis/Output/Popgen/pedigree/F2BF3O/Moderate/F2BF3O_MOD_GetMaybeRelBootPed_out.csv")
+
+
+```
+
+* run BootPed for F2BF3J HIGH
+
+inputs:
+  - GenoM = F2BF3O_HIGH.GenoM_final
+  - LifeHistData = F2BF3O_HIGH.LifeHistData
+  - threshold.LLR = -2
+  - min.LLR = 0.1
+  - n.SNP = 50
+  - n.bootstrap = 100
+
+output: 
+ *  run on 2/7/2025
+[1] "Predigree summary: 40/44 offspring with pedigree assignment; 11/40 pedigree assignments with highest abs LLR are TRUE fertilized pairs"
+[1] "Edit the n.SNP or n.bootstrap call for better pedigree"
+
+```{r Pedigree construction: F2BF3O HIGH}
+
+
+
+F2BF3O_HIGH.Pedtest <- Pedtest(F2BF3O_HIGH.GenoM_final, F2BF3O_HIGH.LifeHistData, -2, 0.2)
+F2BF3O_HIGH.Pedtest$out
+F2BF3O_HIGH.Pedtest$plot
+
+pdf("RAnalysis/Output/Popgen/pedigree/F2BF3O/High/F2BF3O_HIGH_Pedtest.pdf", width = 4, height = 4)
+print(F2BF3O_HIGH.Pedtest$plot)
+dev.off()
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# F3 OFFPSRING (treatment specific)   
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# high
+F2BF3O_HIGH.sequoia <- BootPed(
+                              F2BF3O_HIGH.GenoM_final, 
+                              F2BF3O_HIGH.LifeHistData,# LifeHistData
+                              -2,# threshold.LLR
+                              0.1,# min.LLR
+                              50, # n.SNP
+                              100)# n.bootstrap
+#  *  run on 2/7/2025
+# [1] "Predigree summary: 40/44 offspring with pedigree assignment; 11/40 pedigree assignments with highest abs LLR are TRUE fertilized pairs"
+# [1] "Edit the n.SNP or n.bootstrap call for better pedigree"
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# data files
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# raw - all cumulative output
+F2BF3O_HIGH.pedigree.raw       <- as.data.frame(F2BF3O_HIGH.sequoia$raw)
+rownames(F2BF3O_HIGH.pedigree.raw) <- NULL # renomve rownames
+
+
+
+# summary - those with actual broodstock as parents
+F2BF3O_HIGH.pedigree.summary   <- as.data.frame(F2BF3O_HIGH.sequoia$summary)
+rownames(F2BF3O_HIGH.pedigree.summary) <- NULL # renomve rownames
+F2BF3O_HIGH.pedigree.summary <- apply(F2BF3O_HIGH.pedigree.summary,2,as.character) # need to do this to output the list of batches!
+
+
+
+# out - top LLR taking unique IDs
+F2BF3O_HIGH.pedigree.out  <- as.data.frame(F2BF3O_HIGH.pedigree.summary) %>% 
+                            group_by(id) %>% # group by id - there are mutliple occurances of pedigree assign for ids!
+                            # filter(Fertilization_pairs %in% 'TRUE') %>% 
+                            dplyr::top_n(1, LLRpair ) %>%  # take the best hit essential, HIGHest LLR total 
+                            distinct(id, .keep_all = TRUE) %>% 
+                            dplyr::select(id, dam, sire, LLRpair , dam.batch, sire.batch, Fertilization_pairs, loci) # select the target columns for next sequoia run
+rownames(F2BF3O_HIGH.pedigree.out) <- NULL # renomve rownames
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# which ids did not get pedigree???
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F2BF3O_HIGH.LifeHistData %>% filter(!(BirthYear %in% min(BirthYear) |
+                                        id %in% F2BF3O_HIGH.pedigree.out$id))
+# 4 rows, 4 ids did not, run et mayRel
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Run GetMaybeRelBootPed 
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+F2BF3O_HIGH.getmayberel <- GetMaybeRelBootPed(F2BF3O_HIGH.pedigree.out, #sequoia pedigree output final
+                                             F2BF3O_HIGH.GenoM_final, # GenoM, 
+                                             F2BF3O_HIGH.LifeHistData, # LifeHistData, 
+                                             50#  n.SNPs, 
+                                             )
+
+F2BF3O_HIGH.getmayberel.out <- as.data.frame(F2BF3O_HIGH.getmayberel$out)
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# output
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+write.csv(F2BF3O_HIGH.pedigree.raw, "RAnalysis/Output/Popgen/pedigree/F2BF3O/High/F2BF3O_HIGH_SequoiaBootPed_raw.csv")
+write.csv(F2BF3O_HIGH.pedigree.summary, "RAnalysis/Output/Popgen/pedigree/F2BF3O/High/F2BF3O_HIGH_SequoiaBootPed_summary.csv")
+write.csv(F2BF3O_HIGH.pedigree.out, "RAnalysis/Output/Popgen/pedigree/F2BF3O/High/F2BF3O_HIGH_SequoiaBootPed_out.csv")
+write.csv(F2BF3O_HIGH.getmayberel.out, "RAnalysis/Output/Popgen/pedigree/F2BF3O/High/F2BF3O_HIGH_GetMaybeRelBootPed_out.csv")
+```
+
+
+## Estimate confidence in pedigree using 'EstConf'
+
+
+* Each rate is calculated separatedly for dams & sires, and separately for each category (**G**enotyped/**D**ummy(fiable)/**X** (none)) of individual, parent and co-parent.
+
+Category of the focal individual, dam, and sire, in the pedigree inferred based on the simulated data. Coded as 
+    G=genotyped, D=dummy, X=none
+
+dam.conf	 = Probability that the dam is correct, given the categories of the assigned dam and sire (ignoring whether or not the sire is correct)
+
+sire.conf	 = as dam.conf, for the sire
+
+pair.conf	 = Probability that both dam and sire are correct, given their categories
+
+N	         = Number of individuals per category-combination, across all nSim iterations
+
+```{r about 'EstConf()}
+?sequoia::EstConf()
+
+# EstConf(
+#   Pedigree = NULL,
+#   LifeHistData = NULL,
+#   args.sim = list(nSnp = 400, SnpError = 0.001, ParMis = c(0.4, 0.4)),
+#   args.seq = list(Module = "ped", Err = 0.001, Tassign = 0.5, CalcLLR = FALSE),
+#   nSim = 10,
+#   nCores = 1,
+#   quiet = TRUE
+# )
+
+```
+
+
+```{r load output pedigrees and subset lifehisotry data}
+
+# pedigree :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+F0BF1O.pedigree <- read.csv("RAnalysis/Output/Popgen/pedigree_sequoia/F0BF1O/F0BF1O_final.csv") %>% 
+                      select(id, dam, sire) 
+
+F1BF2O.pedigree.low  <- read.csv("RAnalysis/Output/Popgen/pedigree_sequoia/F1BF2O/Low/F1BF2O_Low_final.csv") %>% 
+                                select(id, dam, sire) 
+F1BF2O.pedigree.mod  <- read.csv("RAnalysis/Output/Popgen/pedigree_sequoia/F1BF2O/Moderate/F1BF2O_Mod_final.csv") %>% 
+                                select(id, dam, sire) 
+F1BF2O.pedigree.high <- read.csv("RAnalysis/Output/Popgen/pedigree_sequoia/F1BF2O/High/F1BF2O_High_final.csv") %>% 
+                                select(id, dam, sire) 
+
+# have not run these yet!
+F2BF3O.pedigree.low  <- read.csv("RAnalysis/Output/Popgen/pedigree_sequoia/F2BF3O/Low/F2BF3O_Low_final.csv") %>% 
+                                select(id, dam, sire) 
+F2BF3O.pedigree.mod  <- read.csv("RAnalysis/Output/Popgen/pedigree_sequoia/F2BF3O/Moderate/F2BF3O_Mod_final.csv") %>% 
+                                select(id, dam, sire) 
+F2BF3O.pedigree.high <- read.csv("RAnalysis/Output/Popgen/pedigree_sequoia/F2BF3O/High/F2BF3O_High_final.csv") %>% 
+                                select(id, dam, sire) 
+
+# LifeHistData :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+F0BF1O.LifeHistData <- rbind(All.LifeHistData.2 %>% 
+                            filter(ID %in% unique(c(F1O_pedigree$id, 
+                                                  F1O_pedigree$dam, 
+                                                  F1O_pedigree$sire))))
+
+F1BF2O.low.LifeHistData <- rbind(All.LifeHistData.2 %>% 
+                            filter(ID %in% unique(c(F1BF2O.pedigree.low$id, 
+                                                  F1BF2O.pedigree.low$dam, 
+                                                  F1BF2O.pedigree.low$sire))))
+
+F1BF2O.mod.LifeHistData <- rbind(All.LifeHistData.2 %>% 
+                            filter(ID %in% unique(c(F1BF2O.pedigree.mod$id, 
+                                                  F1BF2O.pedigree.mod$dam, 
+                                                  F1BF2O.pedigree.mod$sire))))
+
+F1BF2O.high.LifeHistData <- rbind(All.LifeHistData.2 %>% 
+                            filter(ID %in% unique(c(F1BF2O.pedigree.high$id, 
+                                                  F1BF2O.pedigree.high$dam, 
+                                                  F1BF2O.pedigree.high$sire))))
+```
+
+```{r estimate confidence in pedigree using 'EstConf'}
+
+# F0BF1O - F0BF1O.pedigree & F0BF1O.LifeHistData
+F0BF1O.EstConf <- 
+  EstConf(
+  Pedigree = F0BF1O.pedigree,
+  LifeHistData = F0BF1O.LifeHistData,
+  args.sim = list(nSnp = 100, SnpError = 0.001, ParMis = c(0.4, 0.4)),
+  args.seq = list(Module = "ped", Err = 0.001, Tassign = 0.5, CalcLLR = FALSE),
+  nSim = 10,
+  nCores = 1,
+  quiet = TRUE
+)
+F0BF1O.EstConf$ConfProb
+
+# F1BF2O.low - F1BF2O.pedigree.low & F1BF2O.low.LifeHistData
+F1BF2O.low.EstConf <- 
+  EstConf(
+  Pedigree = F1BF2O.pedigree.low,
+  LifeHistData = F1BF2O.low.LifeHistData,
+  args.sim = list(nSnp = 100, SnpError = 0.001, ParMis = c(0.4, 0.4)),
+  args.seq = list(Module = "ped", Err = 0.001, Tassign = 0.5, CalcLLR = FALSE),
+  nSim = 10,
+  nCores = 1,
+  quiet = TRUE
+)
+F1BF2O.low.EstConf$ConfProb
+
+# F1BF2O.mod - F1BF2O.pedigree.mod & F1BF2O.mod.LifeHistData
+F1BF2O.mod.EstConf <- 
+  EstConf(
+  Pedigree = F1BF2O.pedigree.mod,
+  LifeHistData = F1BF2O.mod.LifeHistData,
+  args.sim = list(nSnp = 100, SnpError = 0.001, ParMis = c(0.4, 0.4)),
+  args.seq = list(Module = "ped", Err = 0.001, Tassign = 0.5, CalcLLR = FALSE),
+  nSim = 10,
+  nCores = 1,
+  quiet = TRUE
+)
+F1BF2O.mod.EstConf$ConfProb
+
+# F1BF2O.high - F1BF2O.pedigree.high & F1BF2O.high.LifeHistData
+F1BF2O.high.EstConf <- 
+  EstConf(
+  Pedigree = F1BF2O.pedigree.high,
+  LifeHistData = F1BF2O.high.LifeHistData,
+  args.sim = list(nSnp = 100, SnpError = 0.001, ParMis = c(0.4, 0.4)),
+  args.seq = list(Module = "ped", Err = 0.001, Tassign = 0.5, CalcLLR = FALSE),
+  nSim = 10,
+  nCores = 1,
+  quiet = TRUE
+)
+F1BF2O.high.EstConf$ConfProb
+
+```
+
+## Calculate the log10-liklihood of relatioships in each pair of individuals using `CalcPairLL`
+
+```{r read about pairwise relationship liklihoods}
+?CalcPairLL #pairwise relationship liklihoods
+```
+
+pairwise relationship likelihoods
+
+**Objectve**: for each specified pair of individuals calculate the log 10-liklihood of being PO, FS, HS, GP, FA, HA, U
+
+-   PO - parent - offspring
+-   FS - full siblings
+-   HS - half siblings
+-   GP - grandparent
+-   FA - full avuncular
+-   HA - Half avuncular and other 3rd degree relationships
+-   U - Unrelated
+-   2nd - unclear which type of 2nd degree rel (HS, GP, or FA)
+-   ?? - Unclear which type of 1st, 2nd or 3rd degree relatives
+
+### Preliminary (simple) test, F0 and F1 offspring
+
+Data:
+
+- GenoM: F0BF1O.GenoM
+
+- Pedigree: F0BF1O.pedigree
+
+- LifeHistData: F1O.LifeHistData
+
+```{r CalcPairLL F0 broodstock and F1 offspring}
+# Pairs ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# dataframe with columns ID1 and ID2 containing all possible combinations 
+F0BF1O.Pairs_raw  <- data.frame(F0BF1O.ListIDs) %>% 
+                        dplyr::rename(ID1 = F0BF1O.ListIDs) %>% # rename
+                        dplyr::mutate(ID2 = ID1) %>% # duplicate
+                        tidyr::expand(ID1, ID2) %>% # get all possible combinations 
+                        dplyr::mutate(AgeDif = case_when(
+                          # ID1 and ID2 are F0 broodstock
+                          (grepl("F0", ID1, ignore.case = TRUE) &
+                            grepl("F0", ID2, ignore.case = TRUE)) ~ 0,
+                          # ID1 and ID2 are F1 Juveniles
+                          (!grepl("F0", ID1, ignore.case = TRUE) &
+                            !grepl("F0", ID2, ignore.case = TRUE)) ~ 0,
+                          # ID1  is F1 juvenile and ID2 is F0 broodstock
+                          (!grepl("F0", ID1, ignore.case = TRUE) &
+                            grepl("F0", ID2, ignore.case = TRUE)) ~ 1,
+                          # IF1 is F0 broodstock and ID2 is F1 juvenile
+                          (grepl("F0", ID1, ignore.case = TRUE) &
+                            !grepl("F0", ID2, ignore.case = TRUE)) ~ -1,
+                        ))
+F0BF1O.Pairs      <- F0BF1J.Pairs_raw[F0BF1J.Pairs_raw$ID1 != F0BF1J.Pairs_raw$ID2,] %>% 
+                          dplyr::filter(!AgeDif == 0)
+                       
+
+# SNP matrix :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+F0BF1O.GenoM
+
+# LifeHistData :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+F1O.LifeHistData <- rbind(All.LifeHistData.2 %>% 
+                            filter(ID %in% unique(c(F1O_pedigree$id, 
+                                                  F1O_pedigree$dam, 
+                                                  F1O_pedigree$sire))))
+#  PREPARE NECESSARY INPUTS! 
+# F0B_pedigree <- read.csv(paste0(getwd(),"/RAnalysis/Data/Popgen/Parentages/F1_parentage.csv"), 
+#                          sep = ',', head = T) %>% 
+#                   dplyr::select(vcf_ID_raw,Ped) %>% 
+#                   dplyr::rename(id = vcf_ID_raw) %>% 
+#                   dplyr::mutate(dadid = NA,
+#                                 momid = NA,
+#                                 sex = case_when(Ped %in% c('Both', 'Sire') ~ 2,
+#                                                 TRUE ~ 1)) %>% 
+#                   dplyr::select(!Ped)
+
+# F0BF1O_pedigree     <- rbind(F0B_pedigree, F1O_pedigree)
+
+# Pedigree :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+F0BF1O.pedigree <- read.csv("RAnalysis/Output/Popgen/pedigree_sequoia/F0BF1O/F0BF1O_final.csv") %>% 
+                      select(id, dam, sire) %>% 
+                      mutate(sex = 1) # although simultaneous hermaphrodites, assign all juv progeny as 1 (male)
+
+
+
+
+# Run it! ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+?CalcPairLL
+F0BF1J.CalcPairLL <- CalcPairLL(Pairs = F0BF1O.Pairs,
+                                GenoM = F0BF1O.GenoM, 
+                                Pedigree = F0BF1O.pedigree,
+                                LifeHistData = F1O.LifeHistData,
+                                Err = 1e-04,
+                                Herm = "A",
+                                Plot=FALSE)
+
+View(F0BF1J.CalcPairLL)
+
+
+
+
+F0BF1J.CalcPairLL <- 
+  CalcPairLL(
+            Pairs = F0BF1O.Pairs,
+            GenoM = F0BF1O.GenoM,
+            Pedigree = F0BF1O.pedigree,
+            LifeHistData = F1O.LifeHistData, # working on it
+            AgePrior = TRUE, # working on it
+            SeqList = NULL,
+            Complex = "full",
+            Herm = "A", # "A" (distinguish between dam and sire role, default if at least 1 individual with sex=4), or "B" (no distinction between dam and sire role).
+            Err = 1e-04,
+            ErrFlavour = "version2.9",
+            Tassign = 0.5,
+            Tfilter = -2,
+            quiet = FALSE,
+            Plot = TRUE
+            )
+F0BF1J.CalcPairLL
+
+
+
+PlotPairLL(
+  F0BF1J.CalcPairLL,
+  combo = list(c("FS", "PO"), c("HS", "FS"), c("GP", "HS"), c("FA", "HS")),
+  nrows = NULL,
+  ncols = NULL,
+  bgcol = TRUE,
+  Tassign = 0.5,
+  Tfilter = -2
+)
+
+
+
+# old notes ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# add pedigree data note that we have the info for males and gemles (eggs and sperm 
+# contributed by F0 broodstock to batch fertilization. 
+
+# Pedigree
+F0BF1J.IDs   <- as.data.frame(table(F0BF1J.ListIDs, dnn = list("id"))) %>% select(id)
+F0B.Pedigree <- pivot_wider(
+                              data = (F1.Parentage %>% 
+                                      select(vcf_ID_raw, Ped) %>%  # call data
+                                      rename(id = vcf_ID_raw)),
+                              values_from = Ped,
+                              names_from = Ped) %>% # widen it with pivot
+                   dplyr::filter_at(.vars = vars(Both, Dam, Sire), # omit rows that are NA for all!
+                                   .vars_predicate = any_vars(!is.na(.))) %>% 
+                   dplyr::mutate(sire = case_when(Both %in% 'Both' ~ 1,
+                                                  Sire %in% 'Sire' ~ 1,
+                                                  Dam  %in% 'Dam'  ~ 0),
+                                 dam =  case_when(Both %in% 'Both' ~ 1,
+                                                  Dam  %in% 'Dam'  ~ 1,
+                                                  Sire == 1 ~ 0)) %>% 
+                   dplyr::select(!c('Both', 'Sire', 'Dam', 'NA'))
+                                 
+F0BF1J.Pedigree <- merge(F0B.Pedigree, F0BF1J.IDs, all= T)
+PedPolish(F0BF1J.Pedigree)# check
+View(F0BF1J.Pedigree)
+# LifeHistDate
+
+LifeHistData_scallop <- 
+
+#AgePrior
+AgePrior_scallop <- 
+  
+
+CalcPairLL(Pairs = F0BF1J.Pairs,
+           GenoM = F0BF1J.matrix, 
+           Err = 1e-04, 
+           Plot=FALSE)
+
+tail(SeqOUT_griffin$PedigreePar, n=3)
+#  RUN IT!
+
+
+CalcPairLL(
+            Pairs = F0BF1J.Pairs,
+            GenoM = F0BF1J.matrix,
+            Pedigree = as.data.frame(F0BF1J.pedigree),
+            LifeHistData = F0BF1J.LifeHistData.editted, # working on it
+            AgePrior = TRUE, # working on it
+            SeqList = NULL,
+            Complex = "full",
+            Herm = "A", # "A" (distinguish between dam and sire role, default if at least 1 individual with sex=4), or "B" (no distinction between dam and sire role).
+            Err = 1e-04,
+            ErrFlavour = "version2.9",
+            Tassign = 0.5,
+            Tfilter = -2,
+            quiet = FALSE,
+            Plot = TRUE
+)
+```
+
+-   fubd kujet rekatuve pairs '**GetMaybeRel**'
+
+```{r read about pairwise relationship liklihoods}
+?GetMaybeRel #pairwise relationship liklihoods
+```
+
+## Load and edit datasets to run *GetMaybeRel* in `sequoia`
+
+```{r read parentage csv files}
+
+F1.Parentage <- read.csv(paste0(getwd(),"/RAnalysis/Data/Popgen/Parentages/F1_parentage.csv"), 
+                         sep = ',', 
+                         head = T)
+
+F2.Parentage <- read.csv(paste0(getwd(),"/RAnalysis/Data/Popgen/Parentages/F2_parentage.csv"), 
+                         sep = ',', 
+                         head = T)
+
+F3.Parentage <- read.csv(paste0(getwd(),"/RAnalysis/Data/Popgen/Parentages/F3_parentage.csv"), 
+                         sep = ',', 
+                         head = T)
+```
+
+-   'F1.Parentage.vcf' subset F0+F1 offspring
+
+```{r subset 'F1.Parentage.vcf'}
+vcf # 391 samples, 2,947 variants
+
+# F0 are 2:26
+colnames(All.vcf@gt[,2:26])
+# F1 juveniles are 63:139
+colnames(All.vcf@gt[,63:139])
+
+# subset for F10 and F1 juveniles
+# retaincolumn 1 'Format' 
+F1.Parentage.vcf <- vcf[,c(1:26,63:139)]
+
+```
+
+-   'F2.Parentage.vcf' subset F1+F2 offspring
+
+```{r subset 'F2.Parentage.vcf'}
+vcf # 391 samples, 2,947 variants
+colnames(All.vcf@gt)
+
+# F1 broodstock are 27:62
+colnames(All.vcf@gt[,27:62])
+# F2 juveniles are 178:250
+colnames(All.vcf@gt[178:250])
+
+# subset for F10 and F1 juveniles
+# retaincolumn 1 'Format' 
+F2.Parentage.vcf <- vcf[,c(1,27:62,178:250)]
+
+```
+
+-   'F3.Parentage.vcf' subset F0+F1 offspring
+
+```{r subset 'F3.Parentage.vcf'}
+vcf # 391 samples, 2,947 variants
+colnames(All.vcf@gt)
+
+
+# F1 broodstock are 140:176
+colnames(All.vcf@gt[,140:176])
+# F2 juveniles are 251:392
+colnames(All.vcf@gt[251:392])
+
+# subset for F10 and F1 juveniles
+# retaincolumn 1 'Format' 
+F3.Parentage.vcf <- vcf[,c(1,140:176,251:392)]
+
+```
+
+**dna**
+
+-   read refernce genome, rename chromosome accession ids to match
+
+```{r read ref genome and rename chromose accesion ids}
+
+dna        <- ape::read.dna("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_Ai_NY_genomic.fna", 
+                            format = "fasta")
+dna_chroms <- (dna)[1:16]
+names(dna_chroms) <- c('CM084264.1', 'CM084265.1', 'CM084266.1', 'CM084267.1',
+                       'CM084268.1', 'CM084269.1', 'CM084270.1', 'CM084271.1', 
+                       'CM084272.1', 'CM084273.1', 'CM084274.1', 'CM084275.1', 
+                       'CM084276.1', 'CM084277.1', 'CM084278.1', 'CM084279.1')
+
+```
+
+**gff**
+
+-   read refernce gene function file (gff), rename chromosome accession ids to match
+
+```{r read reference gff file and rename accession ids to match}
+
+# gff <- read.table("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff", sep="\t", quote="")
+gff <- ape::read.gff("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff") %>% 
+            dplyr::filter(type %in% 'mRNA') %>%  # to mimix the example 
+            dplyr::filter(!grepl("NW_",seqid)) %>% 
+            dplyr::mutate(attributes = paste0('NAME=',(gsub('.*;product=', '', attributes))),
+                          seqid = case_when(seqid %in% 'NC_091134.1' ~ 'CM084264.1',
+                                            seqid %in% 'NC_091135.1' ~ 'CM084265.1',
+                                            seqid %in% 'NC_091136.1' ~ 'CM084266.1',
+                                            seqid %in% 'NC_091137.1' ~ 'CM084267.1',
+                                            seqid %in% 'NC_091138.1' ~ 'CM084268.1',
+                                            seqid %in% 'NC_091139.1' ~ 'CM084269.1',
+                                            seqid %in% 'NC_091140.1' ~ 'CM084270.1',
+                                            seqid %in% 'NC_091141.1' ~ 'CM084271.1',
+                                            seqid %in% 'NC_091142.1' ~ 'CM084272.1',
+                                            seqid %in% 'NC_091143.1' ~ 'CM084273.1',
+                                            seqid %in% 'NC_091144.1' ~ 'CM084274.1',
+                                            seqid %in% 'NC_091145.1' ~ 'CM084275.1',
+                                            seqid %in% 'NC_091146.1' ~ 'CM084276.1',
+                                            seqid %in% 'NC_091147.1' ~ 'CM084277.1',
+                                            seqid %in% 'NC_091148.1' ~ 'CM084278.1',
+                                            seqid %in% 'NC_091149.1' ~ 'CM084279.1'),
+                          transcript_id = gsub('.*transcript_id=', '', attributes),
+                          protein_id =gsub(".*NAME=(.+);.*", "\\1", attributes) 
+            ) %>% 
+          dplyr::rename(chromosme = seqid) %>% 
+          dplyr::select(chromosme, start, end, transcript_id, protein_id)
+unique(gff$seqid) # good, the 16 chromosomes
+
+
+```
+
+```{r}
+
+
+
+All.vcf@meta[11]
+
+chrom <- create.chromR(name="CM084265.1", vcf=All.vcf, seq=dna_chroms, ann=gff, verbose=FALSE)
+chrom@vcf
+# mock data for create.chromR
+data(vcfR_example)
+dna
+vcf@gt
+gff
+chrom <- create.chromR('sc50', seq=dna, vcf=vcf, ann=gff)
+head(chrom)
+chrom
+plot(chrom)
+
+chrom <- masker(chrom, min_QUAL = 1, min_DP = 300, max_DP = 700, min_MQ = 59, max_MQ = 61)
+chrom <- proc.chromR(chrom, win.size=1000)
+
+plot(chrom)
+chromoqc(chrom)
+
+```
+
+```{r create genind of subset}
+# genind
+vcf_F0B.F1J.gen <- vcf_F0B.F1J %>% vcfR2genind()
+```
+
+```{r format genind to as.matrix}
+F0B.F1J_matrix <- as.matrix(vcf_F0B.F1J.gen)
+rownames(F0B.F1J_matrix)
+
+?MakeAgePrior 
+?GetMaybeRel
+
+GetMaybeRel(
+  GenoM = F0B.F1J_matrix,
+  SeqList = NULL,
+  Pedigree = NULL,
+  LifeHistData = NULL, # we can add this
+  AgePrior = NULL,
+  Module = "ped",
+  #ParSib = "sib",
+  MaxPairs = 7 * nrow(F0B.F1J_matrix)
+)
+
+```
+
+First import the unphased SNP data and pop metadata
+
+```{r}
+
+# Read in the filtered SNP VCF file (non-phased) to a genind object
+gen <- read.vcfR(here::here(getwd(),
+                            "RAnalysis", 
+                            "Data", 
+                            "Popgen", 
+                            "03_prune", 
+                            "out.7.phased.vcf.gz"), verbose = FALSE) %>%
+        vcfR2genind()
+
+indNames(gen) <- case_when(
+  
+  grepl("F0-B", indNames(gen)) ~ "F0",
+  
+  grepl("F1-B.*pH8", indNames(gen))  ~ "F1_broodstock_Low",
+  grepl("F1-B.*pH75", indNames(gen)) ~ "F1_broodstock_Moderate",
+  
+  grepl("F2-B.*pH8", indNames(gen))  ~ "F2_broodstock_Low",
+  grepl("F2-B.*pH75", indNames(gen)) ~ "F2_broodstock_Moderate",
+  grepl("F2-B.*pH7.", indNames(gen)) ~ "F2_broodstock_High",
+
+  grepl("F1-J.*pH8", indNames(gen)) ~ "F1_juvenile_Low",
+  grepl(c("[.]101[.]|[.]103[.]|[.]104[.]|[.]153[.]|[.]154[.]|[.]155[.]|[.]53[.]|[.]54[.]|[.]55[.]|[.]3[.]|[.]4[.]|[.]5[.]"), indNames(gen)) ~ "F1_juvenile_Low",
+  grepl("F1-J.*pH75", indNames(gen)) ~ "F1_juvenile_Moderate",
+  grepl("[.]201[.]|[.]203[.]|[.]204[.]|[.]251[.]|[.]253[.]|[.]254[.]|[.]301[.]|[.]303[.]|[.]304[.]|[.]351[.]|[.]352[.]|[.]353[.]|[.]354[.]", indNames(gen)) ~ "F1_juvenile_Moderate",
+  
+  grepl("F2-J.*pH8", indNames(gen))  ~ "F2_juvenile_Low",
+  grepl("F2-J.*pH75", indNames(gen)) ~ "F2_juvenile_Moderate",
+  grepl("F2-J.*pH7.", indNames(gen)) ~ "F2_juvenile_High",
+
+  grepl("F3-J.*pH8", indNames(gen))  ~ "F3_juvenile_Low",
+  grepl("F3-J.*pH75", indNames(gen)) ~ "F3_juvenile_Moderate",
+  grepl("F3-J.*pH7.", indNames(gen)) ~ "F3_juvenile_High"
+)
+
+# Assign populations to the genind
+popnames <- tibble(id = indNames(gen)) %>%
+   dplyr::mutate(Individual = gsub('*./','',id),
+                         Type = dplyr::case_when(grepl("-B", Individual) ~ "broodstock", TRUE ~ 'juvenile'),
+                         Gen = dplyr::case_when(grepl("F0", Individual) ~ "F0",
+                                                             grepl("F1", Individual) ~ "F1",
+                                                             grepl("F2", Individual) ~ "F2",
+                                                             grepl("F3", Individual) ~ "F3",
+                                                             TRUE ~ "F1"),
+                         Treatment = dplyr::case_when(
+                                        grepl("F0", Individual) ~ "none",
+                                        grepl("pH7\\.",Individual) ~ "High",
+                                        grepl(c("pH75\\.|.201.|.203.|.204.|.251.|.253.|.254.|.301.|.303.|.304.|.351.|.352.|.353.|.354."), 
+                                              Individual) ~ "Moderate",
+                                        grepl(c("pH8|.101.|.103.|.104.|.153.|.154.|.155.|.3.|.4.|.5."), 
+                                              Individual) ~  "Low")) %>% 
+   dplyr::mutate(pop = dplyr::case_when(Gen == "F0" ~ "F0",
+                                        Gen %in% c("F1","F2","F3") ~ paste0(Gen,'_',Type,'_',Treatment))) %>% 
+   pull(pop)
+
+pop(gen) <- indNames(gen)
+
+indNames(gen) == popnames$pop
+
+```
+
+# **Sequoia**
+
+[link here](https://jiscah.github.io/reference/figures/flowchart.svg)
+
+a comprehensive R package for muligenerational pedigree reconstruction emplpys a fast heuristic hill-climbing algorithm to explore the liklihood surface using SNP data and input sinply the birthyear of your genotyped individuals
+
+key features include:
+
+-   parentage assignment
+-   sibship clustering
+-   grandparent assignment
+-   andles any proportion of genotyped parents
+-   accounts for genotyping errors
+-   does not require predefined lists of candidate parents
+
+## (1) Run GetMaybeRel
+
+-   **Objective** Identify pairs of individuals likely to be related, but not assigned as such in the provided pedigree.
+
+    -   I think this is most suitable for our objective, to assign parent pairs
+
+```{r learn about the call in sequoia}
+?GetMaybeRel
+```
+
+-   'GenoM' = numeric matrix with genotype data: One row per individual, one column per SNP, coded as 0, 1, 2, missing values as a negative number or NA. You can reformat data with GenoConvert, or use other packages to get it into a genlight object and then use as.matrix.
+
+```{r format genind to as.matrix}
+gen_matrix <- as.matrix(gen)
+```
+
+-   first test, subset for F0 and F1
+
+```{r truncate matrix for just F0 and F1 juvenile}
+nrow(gen_matrix) # 391
+
+gen_matrix_F0F1 <- gen_matrix[,]
+
+rownames(gen_matrix) <- "F0"
+
+
+nrow(gen_matrix_F0F1)              
+```
+
+-   'SeqList'
+
+```{r}
+
+
+```
+
+```{r}
+
+
+```
+
+```{r}
+
+
+```
+
+```{r}
+
+
+```
+
+```{r}
+
+
+```
+
+```{r}
+
+
+```
+
+```{r}
+
+
+```
+
+```{r}
+
+
+```
+
+```{r}
+
+
+```
+
+```{r}
+
+
+```

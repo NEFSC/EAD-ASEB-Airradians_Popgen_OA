@@ -1,0 +1,594 @@
+---
+title: "09_qtl_All"
+author: "Samuel Gurr"
+date: "2025-01-29"
+output: html_document
+---
+
+## Objective: 
+
+* load the outputs from lme4qtl and merge with annotation (chromosome number, protein name, etc.)
+
+### set working directory
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# SET WORKING DIRECTORY 
+knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+#knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+```
+
+
+### load libraries
+
+```{r, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(tidyverse)
+library(vcfR)
+library(adegenet)
+library(hierfstat)
+library(poppr)
+library(reshape2)
+library(ggplot2)
+library(RColorBrewer)
+library(scales)
+```
+
+### load data
+
+* load in the significant SNPs from lme4qtl with stepwise bonferroni correctio, review the qtl script for details..
+
+```{r load significant qtl loci}
+
+# read lme4qtl results
+all_qtl_interaction <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_bonferroni_genXtreatment.csv", sep = ',') %>%  select (-X)
+all_qtl_generation  <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_bonferroni_gen_only.csv", sep = ',') %>%  select (-X)
+all_qtl_treatment   <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_bonferroni_treatment_only.csv", sep = ',') %>%  select (-X)
+
+```
+
+
+### Load gff, edit columns to match
+
+-   read refernce gene function file (gff), rename chromosome accession ids to match
+
+```{r read reference gff file and rename accession ids to match}
+
+# gff <- read.table("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff", sep="\t", quote="")
+exon.df <- ape::read.gff("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff") %>% 
+            dplyr::filter(type %in% 'mRNA') %>%  # to mimix the example 
+            dplyr::filter(!grepl("NW_",seqid)) %>% 
+            dplyr::mutate(attributes = paste0('NAME=',(gsub('.*;product=', '', attributes))),
+                          chromosome = case_when(seqid %in% 'NC_091134.1' ~ 'CM084264',
+                                            seqid %in% 'NC_091135.1' ~ 'CM084265',
+                                            seqid %in% 'NC_091136.1' ~ 'CM084266',
+                                            seqid %in% 'NC_091137.1' ~ 'CM084267',
+                                            seqid %in% 'NC_091138.1' ~ 'CM084268',
+                                            seqid %in% 'NC_091139.1' ~ 'CM084269',
+                                            seqid %in% 'NC_091140.1' ~ 'CM084270',
+                                            seqid %in% 'NC_091141.1' ~ 'CM084271',
+                                            seqid %in% 'NC_091142.1' ~ 'CM084272',
+                                            seqid %in% 'NC_091143.1' ~ 'CM084273',
+                                            seqid %in% 'NC_091144.1' ~ 'CM084274',
+                                            seqid %in% 'NC_091145.1' ~ 'CM084275',
+                                            seqid %in% 'NC_091146.1' ~ 'CM084276',
+                                            seqid %in% 'NC_091147.1' ~ 'CM084277',
+                                            seqid %in% 'NC_091148.1' ~ 'CM084278',
+                                            seqid %in% 'NC_091149.1' ~ 'CM084279'),
+                          chrom_num = case_when(chromosome  %in% 'CM084264' ~1, 
+                                                chromosome  %in% 'CM084265' ~2,
+                                                chromosome  %in% 'CM084266' ~3,
+                                                chromosome  %in% 'CM084267' ~4,
+                                                chromosome  %in% 'CM084268' ~5,
+                                                chromosome  %in% 'CM084269' ~6,
+                                                chromosome  %in% 'CM084270' ~7,
+                                                chromosome  %in% 'CM084271' ~8,
+                                                chromosome  %in% 'CM084272' ~9,
+                                                chromosome  %in% 'CM084273' ~10,
+                                                chromosome  %in% 'CM084274' ~11,
+                                                chromosome  %in% 'CM084275' ~12,
+                                                chromosome  %in% 'CM084276' ~13,
+                                                chromosome  %in% 'CM084277' ~14,
+                                                chromosome  %in% 'CM084278' ~15,
+                                                chromosome  %in% 'CM084279' ~16),
+                          transcript_id = gsub('.*transcript_id=', '', attributes),
+                          protein_id =gsub(".*NAME=(.+);.*", "\\1", attributes)) %>% 
+          # dplyr::rename(chromosme = seqid) %>% 
+          dplyr::select(chromosome, chrom_num, start, end, transcript_id, protein_id)
+unique(exon.df$chrom_num) # good, the 16 chromosomes
+
+
+```
+
+
+### Overlay gff with sig SNPs via QTL (lme4qtl)
+
+* filter for cases when the loci is wihtin 1,000 bp from the start and end of a given protein
+
+* if inside coding region, output exon for location and distance_bp = 0,
+if outside of the nearest coding region, output intron (non-coding region) for location and distance_bp as the position from start or end
+
+```{r merge qtl loci with annotation}
+
+
+all_qtl_interaction.annotated <- unique(exon.df %>% 
+                                  left_join(all_qtl_interaction, by = c("chromosome","chrom_num")) %>% 
+                                  # filter(position >= start & position <= end) %>% # exact position
+                                  filter(position >= start-100 & position <= end+100) %>% # within 100 bp of nearest exon
+                                  mutate(up_downstream = case_when(
+                                                                  position < start ~ 'upstream',
+                                                                  position > end ~ 'downstream',
+                                                                  TRUE ~ 'exon'),
+                                         distance_bp = case_when(
+                                                              up_downstream %in% 'upstream' ~ start - position, 
+                                                              up_downstream %in% 'downstream' ~ position - end, 
+                                                              TRUE ~ 0),
+                                         location = case_when((position >= start & position <= end) ~ 'exon',
+                                                               (position <= start | position >= end) ~ 'intron')) %>% 
+                                  select(locus, chrom_num, position, location, distance_bp,  protein_id, start, end))
+
+write.csv(all_qtl_interaction.annotated, "RAnalysis/Output/Popgen/qtl/All_QTL_genXtreatment_annotated.csv")
+unique(all_qtl_interaction$locus)
+unique(all_qtl_interaction.annotated$locus)
+# 5 of 13 loci containing significant interaction with generation x treatment, also mapped to an exon (coding region)
+
+
+all_qtl_generation.annotated <- unique(exon.df %>% 
+                                  left_join(all_qtl_generation, by = c("chromosome","chrom_num")) %>% 
+                                  # filter(position >= start & position <= end) %>% # exact position
+                                  filter(position >= start-100 & position <= end+100) %>% # within 100 bp of nearest exon
+                                  mutate(up_downstream = case_when(
+                                                                  position < start ~ 'upstream',
+                                                                  position > end ~ 'downstream',
+                                                                  TRUE ~ 'exon'),
+                                         distance_bp = case_when(
+                                                              up_downstream %in% 'upstream' ~ start - position, 
+                                                              up_downstream %in% 'downstream' ~ position - end, 
+                                                              TRUE ~ 0),
+                                         location = case_when((position >= start & position <= end) ~ 'exon',
+                                                               (position <= start | position >= end) ~ 'intron')) %>% 
+                                  select(locus, chrom_num, position, location, distance_bp,  protein_id, start, end))
+
+write.csv(all_qtl_generation.annotated, "RAnalysis/Output/Popgen/qtl/All_QTL_gen_annotated.csv")
+unique(all_qtl_generation$locus)
+unique(all_qtl_generation.annotated$locus)
+# 17 of 47  loci containing significant main effect of generation, also mapped to an exon (coding region)
+
+
+all_qtl_treatment.annotated <- unique(exon.df %>% 
+                                left_join(all_qtl_treatment, by = c("chromosome","chrom_num")) %>% 
+                                # filter(position >= start & position <= end) %>% # exact position
+                                  filter(position >= start-100 & position <= end+100) %>% # within 100 bp of nearest exon
+                                  mutate(up_downstream = case_when(
+                                                                  position < start ~ 'upstream',
+                                                                  position > end ~ 'downstream',
+                                                                  TRUE ~ 'exon'),
+                                         distance_bp = case_when(
+                                                              up_downstream %in% 'upstream' ~ start - position, 
+                                                              up_downstream %in% 'downstream' ~ position - end, 
+                                                              TRUE ~ 0),
+                                         location = case_when((position >= start & position <= end) ~ 'exon',
+                                                               (position <= start | position >= end) ~ 'intron')) %>% 
+                                  select(locus, chrom_num, position, location, distance_bp,  protein_id, start, end))
+
+write.csv(all_qtl_treatment.annotated, "RAnalysis/Output/Popgen/qtl/All_QTL_treatment_annotated.csv")
+
+unique(all_qtl_treatment$locus)
+unique(all_qtl_treatment.annotated$locus)
+```
+
+
+
+### DPCA for each of these subsets
+
+* objective: investigate whether the explaned variance od these subset SNPs (from qtl) outweighs that of all SNPs (output from popstats.Rmd)
+specifically, whether we see the trends of PC1 and PC2 favoring the expected model effect, for example loci with a generation effect demonstrating 
+via DPCA that the weight of varaince in these data is explained by generation and *not* treament, etc, etc, (for generation and generation*treatment qtl loci)
+
+
+* (1) load master vcf file, filter for samples of interst (All F1-F3 offspring)
+
+  - load master 'All' vcf file, meaning all individuals sequenced for the experiment
+  - filter for F1, F2 and F3 offspring only, remember that qtl required kinship as a covariance matrix, F0 did not have pedigree and were not included in this analysis!
+  
+    * target outputs: F1F2F3_All.vcf
+
+```{r load master vcf file}
+
+# load master vcf
+All.vcf <- vcfR::read.vcfR(here::here(getwd(),
+                            "RAnalysis", 
+                            "Data", 
+                            "Popgen", 
+                            "03_prune", 
+                            "out.7.phased.vcf.gz"), verbose = FALSE)
+
+# filter out F0, retain all other individuals!
+F1F2F3_All.vcf <- All.vcf[,c(1,27:392)] 
+```
+
+* (2) metadata based on individual ids (need this for the 'pop' in genind object afterwart)
+
+  * target outputs: F1F2F3_All.metadata
+
+```{r pop strata metadata}
+
+# list ids for all individuals int he vcf file
+All.ListIDs  <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+
+# master metadata
+All.metadata <- as.data.frame(matrix(ncol = 1,
+                                     nrow = length(All.ListIDs))) %>% 
+                          mutate(id = All.ListIDs,
+                                 type = dplyr::case_when(grepl("-B", id) ~ "broodstock", TRUE ~ 'juvenile'),
+                                 gen = dplyr::case_when(grepl("F0", id) ~ "F0",
+                                                             grepl("F1", id) ~ "F1",
+                                                             grepl("F2", id) ~ "F2",
+                                                             grepl("F3", id) ~ "F3",
+                                                             TRUE ~ "F1"),
+                                 treatment = dplyr::case_when(
+                                        grepl("F0", id) ~ "none",
+                                        grepl("pH7\\.",id) ~ "High",
+                                        grepl(c("pH75\\.|.201.|.203.|.204.|.251.|.253.|.254.|.301.|.303.|.304.|.351.|.352.|.353.|.354."), id) ~
+                                        "Moderate",
+                                        grepl(c("pH8|.101.|.103.|.104.|.153.|.154.|.155.|.3.|.4.|.5."), id) ~ 
+                                        "Low")) %>% 
+                                dplyr::mutate(gen_treatment = 
+                                                dplyr::case_when(gen == "F0" ~ "F0",
+                                                                 gen %in% c("F1","F2","F3") ~ paste0(gen,'_',treatment))) %>% 
+                                select(-V1) 
+
+F1F2F3_All.metadata     <- All.metadata %>% dplyr::filter(id %in%
+                                                            colnames(F1F2F3_All.vcf@gt[,2:length(colnames(F1F2F3_All.vcf@gt))]))
+```
+
+(3) convert vf to matrix to subset based on target loci 
+
+
+* requires to first build a genind, then convert to matrix
+* with the matrix, filter row names based on the locus column in the qtl resutls files loaded at the start of this script
+
+
+* target outout: All_gen (contians F1, F2, and F3 offspring)
+
+```{r build genind}
+
+
+# first build a preliminary genind, we can convert this to a matrix
+F1F2F3_All.gen   <- F1F2F3_All.vcf %>% vcfR::vcfR2genind() 
+
+
+# All
+ind.All        = as.character(F1F2F3_All.metadata$id) # individual ID
+gen_pCO2.All   = as.character(F1F2F3_All.metadata$gen_treatment) # our metadata to calc pairwise fst
+strata_df.All  = data.frame(ID = ind.All, Population = gen_pCO2.All) # vcf2genind requires a strata dataframe with id and population
+
+
+# build genind object
+All_gen <- vcfR::vcfR2genind(F1F2F3_All.vcf, sep = "[|/]", pop = strata_df.All$Population, strata = strata_df.All)
+All_gen # 366 individuals; 2,947 loci; 5,894 alleles
+popNames(All_gen) # "F1_Low"      "F1_Moderate" "F2_High"     "F2_Low"      "F2_Moderate" "F3_High"     "F3_Low"      "F3_Moderate"
+
+
+
+
+# subset of loci in the main genind object and convert to matrix
+Qtl_interaction.gen   <- All_gen[, All_gen$loc.fac %in% gsub("[.].*","", all_qtl_interaction$locus)]
+Qtl_interaction.GenoM <- as.matrix(Qtl_interaction.gen)
+
+Qtl_generation.gen   <- All_gen[, All_gen$loc.fac %in% gsub("[.].*","", all_qtl_generation$locus)]
+Qtl_generation.GenoM <- as.matrix(Qtl_generation.gen)
+
+Qtl_treatment.gen   <- All_gen[, All_gen$loc.fac %in% gsub("[.].*","", all_qtl_treatment$locus)]
+Qtl_treatment.GenoM <- as.matrix(Qtl_treatment.gen)
+
+```
+
+
+```{r custom theme for plotting}
+# Custom theme for ggplot2
+custom_theme = theme(
+                      axis.text.x = element_text(size = 10, angle = 90, vjust = 0.5, face = "bold"),
+                      axis.text.y = element_text(size = 10),
+                      axis.title.y = element_text(size = 12),
+                      axis.title.x = element_text(size = 12),
+                      axis.line.y = element_line(size = 0.5),
+                      axis.line.x = element_line(size = 0.5),
+                      legend.title = element_blank(),
+                      legend.text = element_text(size = 12),
+                      panel.grid = element_blank(),
+                      panel.background = element_blank(),
+                      plot.title = element_text(hjust = 0.5, size = 15, face="bold")
+                      )
+
+```
+
+
+```{r DAPC run: gen * treatment interaction}
+
+# Perform cross validation to find the optimal number of PCs to retain in DAPC
+set.seed(123)
+x.Qtl_interaction             <-  tab(Qtl_interaction.gen, NA.method = "mean")
+crossval.Qtl_interaction      <-  xvalDapc(x.Qtl_interaction, Qtl_interaction.gen$pop, result = "groupMean", xval.plot = TRUE) # this takes a LOONG TIME
+
+# Number of PCs with best stats (lower score = better)
+crossval.Qtl_interaction$`Root Mean Squared Error by Number of PCs of PCA`
+#         1         2         3         4         5         6         7         8         9        10        11        12 
+# 0.8192640 0.8132776 0.7354185 0.7158872 0.7392245 0.7270184 0.7042479 0.7184885 0.6918101 0.6826566 0.6419310 0.6616579 
+crossval.Qtl_interaction$`Number of PCs Achieving Highest Mean Success`
+## [1] "100
+crossval.Qtl_interaction$`Number of PCs Achieving Lowest MSE`
+# [1] "100"
+numPCs.Qtl_interaction = as.numeric(crossval.Qtl_interaction$`Number of PCs Achieving Lowest MSE`)
+# # [1] "100"
+
+# Run a DAPC using site IDs as priors
+dapc1.Qtl_interaction = dapc(Qtl_interaction.gen, Qtl_interaction.gen$pop, n.pca = numPCs.Qtl_interaction, n.da = 3)
+
+# Analyse how much percent of genetic variance is explained by each axis
+percent.Qtl_interaction = dapc1.Qtl_interaction$eig/sum(dapc1.Qtl_interaction$eig)*100
+barplot(percent.Qtl_interaction, 
+        ylab = "Genetic variance explained by eigenvectors (%)", 
+        ylim = c(0,60),
+        names.arg = round(percent.Qtl_interaction, 1))
+
+
+
+
+# Create a data.frame containing individual coordinates
+ind_coords.Qtl_interaction = as.data.frame(dapc1.Qtl_interaction$ind.coord)
+
+# Rename columns of dataframe
+colnames(ind_coords.Qtl_interaction) = c("Axis1","Axis2","Axis3")
+
+# Add a column containing individuals
+ind_coords.Qtl_interaction$Ind = indNames(Qtl_interaction.gen)
+
+# Add a column with the site IDs
+ind_coords.Qtl_interaction$Site = Qtl_interaction.gen$pop
+
+# Calculate centroid (average) position for each population
+centroid.Qtl_interaction = aggregate(cbind(Axis1, Axis2, Axis3) ~ Site, data = ind_coords.Qtl_interaction, FUN = mean)
+
+# Add centroid coordinates to ind_coords dataframe
+ind_coords.Qtl_interaction = left_join(ind_coords.Qtl_interaction, centroid.Qtl_interaction, by = "Site", suffix = c("",".cen"))
+
+# Define colour palette
+
+levels(ind_coords.Qtl_interaction$Site) # "F1_Low"      "F1_Moderate" "F2_High"     "F2_Low"      "F2_Moderate" "F3_High"     "F3_Low"      "F3_Moderate"
+# cols.Qtl_interaction = brewer.pal(nPop(Qtl_interaction.gen), "Set2")
+cols.Qtl_interaction = c("#009E73" , "#E69F00", "#CC79A7" , "#009E73" , "#E69F00" , "#CC79A7" ,"#009E73" , "#E69F00" )
+seq.Qtl_interaction = c("grey50" , "grey50", "grey50", "grey50", "grey50", "grey50", "grey50", "grey50")
+
+
+# Custom x and y labels
+xlab.Qtl_interaction = paste("Axis 1 (", format(round(percent.Qtl_interaction[1], 1), nsmall=1)," %)", sep="")
+ylab.Qtl_interaction = paste("Axis 2 (", format(round(percent.Qtl_interaction[2], 1), nsmall=1)," %)", sep="")
+
+# Scatter plot axis 1 vs. 2
+
+ind_coords.Qtl_interaction <- ind_coords.Qtl_interaction  %>%  mutate(Generation = as.factor(gsub('_.*','', Site)))
+alpha.Qtl_interactiont = c(0.2, 0.4 , 0.6)
+
+
+DPCA_QTL_gentreatment <- ggplot(data = ind_coords.Qtl_interaction, aes(x = Axis1, y = Axis2))+
+                            geom_hline(yintercept = 0)+
+                            geom_vline(xintercept = 0)+
+                            # spider segments
+                            geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), size = 0.1, alpha = 0.2, show.legend = FALSE)+
+                            # points
+                            geom_point(aes(fill = Site, shape = Site, alpha = Generation),  size = 3, show.legend = FALSE)+
+                            # centroids
+                            geom_label(data = centroid.Qtl_interaction, 
+                                       aes(label = Site, fill = Site), 
+                                       size = 4, show.legend = FALSE)+
+                            # colouring
+                            scale_fill_manual(values = cols.Qtl_interaction)+
+                            scale_colour_manual(values = seq.Qtl_interaction)+
+                            scale_alpha_manual(values = alpha.Qtl_treatment)+
+                            
+                            # custom shape
+                            scale_shape_manual(values = c(21,21, # F1 are circles
+                                                          22,22,22,# F2 are square
+                                                          24,24,24)) +# F3 are triannlge
+                            # custom labels
+                            labs(x = xlab.Qtl_interaction, 
+                                 y = ylab.Qtl_interaction)+
+                            ggtitle("QTL results gen * treatment: DAPC") +
+                            custom_theme
+
+
+pdf("RAnalysis/Output/Popgen/qtl/All_QTL_genXtreatment_DAPC.pdf", width =6, height = 6)
+print(DPCA_QTL_gentreatment)
+dev.off()
+```
+
+```{r DAPC run: gen main effect}
+
+# Perform cross validation to find the optimal number of PCs to retain in DAPC
+set.seed(123)
+x.Qtl_generation             <-  tab(Qtl_generation.gen, NA.method = "mean")
+crossval.Qtl_generation      <-  xvalDapc(x.Qtl_generation, Qtl_generation.gen$pop, result = "groupMean", xval.plot = TRUE) # this takes a LOONG TIME
+
+# Number of PCs with best stats (lower score = better)
+crossval.Qtl_generation$`Root Mean Squared Error by Number of PCs of PCA`
+#         5        10        15        20        25        30        35        40        45 
+# 0.6811366 0.6539111 0.6512492 0.6594195 0.6683793 0.6457258 0.6357845 0.6485262 0.6237079 
+crossval.Qtl_generation$`Number of PCs Achieving Highest Mean Success`
+## [1] "45
+crossval.Qtl_generation$`Number of PCs Achieving Lowest MSE`
+## [1] "45
+numPCs.Qtl_generation = as.numeric(crossval.Qtl_generation$`Number of PCs Achieving Lowest MSE`)
+## [1] "45
+
+# Run a DAPC using site IDs as priors
+dapc1.Qtl_generation = dapc(Qtl_generation.gen, Qtl_generation.gen$pop, n.pca = numPCs.Qtl_generation, n.da = 3)
+
+# Analyse how much percent of genetic variance is explained by each axis
+percent.Qtl_generation = dapc1.Qtl_generation$eig/sum(dapc1.Qtl_generation$eig)*100
+barplot(percent.Qtl_generation, 
+        ylab = "Genetic variance explained by eigenvectors (%)", 
+        ylim = c(0,60),
+        names.arg = round(percent.Qtl_generation, 1))
+
+
+
+
+# Create a data.frame containing individual coordinates
+ind_coords.Qtl_generation = as.data.frame(dapc1.Qtl_generation$ind.coord)
+
+# Rename columns of dataframe
+colnames(ind_coords.Qtl_generation) = c("Axis1","Axis2","Axis3")
+
+# Add a column containing individuals
+ind_coords.Qtl_generation$Ind = indNames(Qtl_generation.gen)
+
+# Add a column with the site IDs
+ind_coords.Qtl_generation$Site = Qtl_generation.gen$pop
+
+# Calculate centroid (average) position for each population
+centroid.Qtl_generation = aggregate(cbind(Axis1, Axis2, Axis3) ~ Site, data = ind_coords.Qtl_generation, FUN = mean)
+
+# Add centroid coordinates to ind_coords dataframe
+ind_coords.Qtl_generation = left_join(ind_coords.Qtl_generation, centroid.Qtl_generation, by = "Site", suffix = c("",".cen"))
+
+# Define colour palette
+levels(ind_coords.Qtl_generation$Site) # "F1_Low"      "F1_Moderate" "F2_High"     "F2_Low"      "F2_Moderate" "F3_High"     "F3_Low"      "F3_Moderate"
+cols.Qtl_generation = c("#009E73" , "#E69F00", "#CC79A7" , "#009E73" , "#E69F00" , "#CC79A7" ,"#009E73" , "#E69F00" )
+seq.Qtl_generation = c("grey50" , "grey50", "grey50", "grey50", "grey50", "grey50", "grey50", "grey50")
+
+# Custom x and y labels
+xlab.Qtl_generation = paste("Axis 1 (", format(round(percent.Qtl_generation[1], 1), nsmall=1)," %)", sep="")
+ylab.Qtl_generation = paste("Axis 2 (", format(round(percent.Qtl_generation[2], 1), nsmall=1)," %)", sep="")
+
+# Scatter plot axis 1 vs. 2
+
+ind_coords.Qtl_generation <- ind_coords.Qtl_generation  %>%  mutate(Generation = as.factor(gsub('_.*','', Site)))
+alpha.Qtl_generation = c(0.2, 0.4 , 0.6)
+
+DPCA_QTL_generation <- ggplot(data = ind_coords.Qtl_generation, aes(x = Axis1, y = Axis2))+
+                            geom_hline(yintercept = 0)+
+                            geom_vline(xintercept = 0)+
+                            # spider segments
+                            geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), size = 0.1, alpha = 0.2, show.legend = FALSE)+
+                            # points
+                            geom_point(aes(fill = Site, shape = Site, alpha = Generation), ,size = 3, show.legend = FALSE)+
+                            # centroids
+                            geom_label(data = centroid.Qtl_generation, 
+                                       aes(label = Site, fill = Site), 
+                                       size = 4, show.legend = FALSE)+
+                            # colouring
+                            scale_fill_manual(values = cols.Qtl_generation)+
+                            scale_colour_manual(values = seq.Qtl_generation)+
+                            scale_alpha_manual(values = alpha.Qtl_treatment)+
+                            # custom shape
+                            scale_shape_manual(values = c(21,21, # F1 are circles
+                                                          22,22,22,# F2 are square
+                                                          24,24,24)) +# F3 are triannlge                            
+                            # custom labels
+                            labs(x = xlab.Qtl_generation, 
+                                 y = ylab.Qtl_generation)+
+                            ggtitle("QTL results generation main effect: DAPC") +
+                            custom_theme
+
+pdf("RAnalysis/Output/Popgen/qtl/All_QTL_gen_DAPC.pdf", width =6, height = 6)
+print(DPCA_QTL_generation)
+dev.off()
+```
+
+```{r DAPC run: OA treatment main effect}
+
+# Perform cross validation to find the optimal number of PCs to retain in DAPC
+set.seed(123)
+x.Qtl_treatment             <-  tab(Qtl_treatment.gen, NA.method = "mean")
+crossval.Qtl_treatment      <-  xvalDapc(x.Qtl_treatment, Qtl_treatment.gen$pop, result = "groupMean", xval.plot = TRUE) # this takes a LOONG TIME
+
+# Number of PCs with best stats (lower score = better)
+crossval.Qtl_treatment$`Root Mean Squared Error by Number of PCs of PCA`
+#        2         4         6         8        10        12        14        16        18        20 
+# 0.7090441 0.6595685 0.6459359 0.6750582 0.6618438 0.6670190 0.6565743 0.6562407 0.6660670 0.6535470  
+crossval.Qtl_treatment$`Number of PCs Achieving Highest Mean Success`
+## [1] "45
+crossval.Qtl_treatment$`Number of PCs Achieving Lowest MSE`
+## [1] "45
+numPCs.Qtl_treatment = as.numeric(crossval.Qtl_treatment$`Number of PCs Achieving Lowest MSE`)
+## [1] "45
+
+# Run a DAPC using site IDs as priors
+dapc1.Qtl_treatment = dapc(Qtl_treatment.gen, Qtl_treatment.gen$pop, n.pca = numPCs.Qtl_treatment, n.da = 3)
+
+# Analyse how much percent of genetic variance is explained by each axis
+percent.Qtl_treatment = dapc1.Qtl_treatment$eig/sum(dapc1.Qtl_treatment$eig)*100
+barplot(percent.Qtl_treatment, 
+        ylab = "Genetic variance explained by eigenvectors (%)", 
+        ylim = c(0,60),
+        names.arg = round(percent.Qtl_treatment, 1))
+
+
+
+
+# Create a data.frame containing individual coordinates
+ind_coords.Qtl_treatment = as.data.frame(dapc1.Qtl_treatment$ind.coord)
+
+# Rename columns of dataframe
+colnames(ind_coords.Qtl_treatment) = c("Axis1","Axis2","Axis3")
+
+# Add a column containing individuals
+ind_coords.Qtl_treatment$Ind = indNames(Qtl_treatment.gen)
+
+# Add a column with the site IDs
+ind_coords.Qtl_treatment$Site = Qtl_treatment.gen$pop
+
+# Calculate centroid (average) position for each population
+centroid.Qtl_treatment = aggregate(cbind(Axis1, Axis2, Axis3) ~ Site, data = ind_coords.Qtl_treatment, FUN = mean)
+
+# Add centroid coordinates to ind_coords dataframe
+ind_coords.Qtl_treatment = left_join(ind_coords.Qtl_treatment, centroid.Qtl_treatment, by = "Site", suffix = c("",".cen"))
+
+# Define colour palette
+levels(ind_coords.Qtl_treatment$Site) # "F1_Low"      "F1_Moderate" "F2_High"     "F2_Low"      "F2_Moderate" "F3_High"     "F3_Low"      "F3_Moderate"
+cols.Qtl_treatment = c("#009E73" , "#E69F00", "#CC79A7" , "#009E73" , "#E69F00" , "#CC79A7" ,"#009E73" , "#E69F00" )
+seq.Qtl_treatment = c("grey50" , "grey50", "grey50", "grey50", "grey50", "grey50", "grey50", "grey50")
+
+# Custom x and y labels
+xlab.Qtl_treatment = paste("Axis 1 (", format(round(percent.Qtl_treatment[1], 1), nsmall=1)," %)", sep="")
+ylab.Qtl_treatment = paste("Axis 2 (", format(round(percent.Qtl_treatment[2], 1), nsmall=1)," %)", sep="")
+
+# Scatter plot axis 1 vs. 2
+
+ind_coords.Qtl_treatment <- ind_coords.Qtl_treatment  %>%  mutate(Generation = as.factor(gsub('_.*','', Site)))
+alpha.Qtl_treatment = c(0.2, 0.4 , 0.6)
+
+DPCA_QTL_treatment <- ggplot(data = ind_coords.Qtl_treatment, aes(x = Axis1, y = Axis2))+
+                            geom_hline(yintercept = 0)+
+                            geom_vline(xintercept = 0)+
+                            # spider segments
+                            geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), size = 0.1, alpha = 0.2, show.legend = FALSE)+
+                            # points
+                            geom_point(aes(fill = Site, shape = Site, alpha = Generation), size = 3, show.legend = FALSE)+
+                            # centroids
+                            geom_label(data = centroid.Qtl_treatment, 
+                                       aes(label = Site, fill = Site), 
+                                       size = 4, show.legend = FALSE)+
+                            # colouring
+                            scale_fill_manual(values = cols.Qtl_treatment)+
+                            scale_colour_manual(values = seq.Qtl_treatment)+
+                            scale_alpha_manual(values = alpha.Qtl_treatment)+
+                            # custom shape
+                            scale_shape_manual(values = c(21,21, # F1 are circles
+                                                          22,22,22,# F2 are square
+                                                          24,24,24)) +# F3 are triannlge    
+                            # custom labels
+                            labs(x = xlab.Qtl_treatment, 
+                                 y = ylab.Qtl_treatment)+
+                            ggtitle("QTL results treatment main effect: DAPC") +
+                            custom_theme
+
+?scale_alpha_manual
+
+pdf("RAnalysis/Output/Popgen/qtl/All_QTL_treatment_DAPC.pdf", width =6, height = 6)
+print(DPCA_QTL_treatment)
+dev.off()
+```
+
