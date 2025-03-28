@@ -14,8 +14,8 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 # SET WORKING DIRECTORY 
-#knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
-knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+#knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
 ```
 
 
@@ -247,6 +247,11 @@ All_master_reordered_rm$id == colnames(All_cov_rm_rc) #  all true
 
 # run a test on one snp
 
+bind_wtl_results <- data.frame(rbind(raw_qtl.df, raw_qtl_merged_altalleles.df))
+
+
+Test <- All_master_reordered_rm %>% dplyr::select(!unique(bind_wtl_results$locus))
+
 m1 <- lme4qtl::relmatGlmer(CM084264_1_65408.1 ~ # SNP DV (must be 0 or 1)
                             gen * treatment +# treatment ID
                             (1|id), # random factor id
@@ -254,9 +259,14 @@ m1 <- lme4qtl::relmatGlmer(CM084264_1_65408.1 ~ # SNP DV (must be 0 or 1)
                           relmat=list(id = All_cov_rm_rc), # covariance matrix (id relatedness)
                           family = binomial(link = "probit") # for binary SNP allele data 
                           )
-anova(m1) # does not get the p value
+m1.anova     <- anova(m1) # does not get the p value
+m1.df        <- m1.anova$npar[3]
+m1.Fvalue    <- m1.anova$`F value`[3] # gen 
+m1.pvalue    <- stats::pf(m1.Fvalue, m1.df, 271, lower.tail = FALSE) 
+
 summary(m1) # summary stats
 car::Anova(m1) # Kenward-Roger-corrected - I think this is ideal for us
+
 ```
 
 ## **Loop lmeqtl locus by locus**
@@ -385,7 +395,7 @@ write.csv(lme4qtl.output, "RAnalysis/Output/Popgen/qtl/All_QTL_raw.csv")
 ```{r lme4qtl run with nerged alt SNPs}
 
 # read in 
-lme4qtl.output <- read.csv("RAnalysis/Output/Popgen/qtl/All_QTL_raw.csv")
+lme4qtl.output <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_raw.csv")
 
 # gather new dataframe from 'All_master_reordered_rm' with just the SNPs that are not in 'lme4qtl.output'
 
@@ -512,9 +522,9 @@ write.csv(lme4qtl.mergedalleles.output, "RAnalysis/Output/Popgen/qtl/All_QTL_raw
   
 ```{r Edit  raw output QTL: Correct for multiple tests}
 
-raw_qtl.df <- read.csv("RAnalysis/Output/Popgen/qtl/All_QTL_raw.csv", sep = ",", head = T) %>% 
+raw_qtl.df <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_raw.csv", sep = ",", head = T) %>% 
                             select(!X)
-raw_qtl_merged_altalleles.df <- read.csv("RAnalysis/Output/Popgen/qtl/All_QTL_raw_merged_altalleles.csv", sep = ",", head = T) %>% select(!X)
+raw_qtl_merged_altalleles.df <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_raw_merged_altalleles.csv", sep = ",", head = T) %>% select(!X)
 
 raw_qtl_master.df <- rbind(raw_qtl.df, raw_qtl_merged_altalleles.df) %>% 
                              distinct() %>%  # omit duplicates, oopsy, added to cumulative file twice..
@@ -596,7 +606,7 @@ write.csv(Bonferroni_qtl.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni.csv
 
 ```{r}
 # laod bonferroni adjusted lme4qtl output
-Bonferroni_qtl.df     <- read.csv("RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni.csv", sep = ",", head = T) %>% select(!X)
+Bonferroni_qtl.df     <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_bonferroni.csv", sep = ",", head = T) %>% select(!X)
 
 # truncate the data to only significant effects
 significant_loci.df   <- Bonferroni_qtl.df %>% dplyr::filter(sig_boolean %in% 'TRUE')
@@ -640,4 +650,177 @@ write.csv(loci_complex.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni_genXt
 write.csv(loci_captivity.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni_gen_only.csv")
 write.csv(loci_bottleneck.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni_treatment_only.csv")
 
+```
+
+
+
+```{r manhattan plot}
+# Load libraries 
+
+install.packages("CMplot")
+library("CMplot")
+
+
+
+# example f the cirvular manhattan plot 
+
+data(pig60K)   #calculated p-values by MLM
+data(cattle50K)   #calculated SNP effects by rrblup
+head(pig60K)
+
+CMplot(pig60K,
+       type="p",
+       plot.type="c",
+       r=0.4,
+       col=c("grey30","grey60"),
+       chr.labels=paste("Chr",c(1:18,"X","Y"),sep=""),
+       threshold=c(1e-6,1e-4),
+       cir.chr.h=1.5,
+       amplify=TRUE,
+       threshold.lty=c(1,2),
+       threshold.col=c("red","blue"),
+       signal.line=1,
+       signal.col=c("red","green"),
+       chr.den.col=c("darkgreen","yellow","red"),
+       bin.size=1e6,
+       outward=FALSE,
+       file="jpg",
+       file.name=NULL,
+       dpi=300,
+       file.output=TRUE,
+       verbose=TRUE,
+       width=10,
+       height=10)
+
+# rad the reference data, objetive here to call the 'rgion' of start and end for chromosome size
+# gff <- read.table("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff", sep="\t", quote="")
+reference.df <- ape::read.gff("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff") %>% 
+            dplyr::filter(type %in% c('region','mRNA')) %>%  # get the region of the chromosome contains protein name, contains all exons
+            dplyr::filter(!grepl("NW_",seqid)) %>% 
+            dplyr::mutate(attributes = paste0('NAME=',(gsub('.*;product=', '', attributes))),
+                          chromosome = case_when(seqid %in% 'NC_091134.1' ~ 'CM084264.1',
+                                            seqid %in% 'NC_091135.1' ~ 'CM084265.1',
+                                            seqid %in% 'NC_091136.1' ~ 'CM084266.1',
+                                            seqid %in% 'NC_091137.1' ~ 'CM084267.1',
+                                            seqid %in% 'NC_091138.1' ~ 'CM084268.1',
+                                            seqid %in% 'NC_091139.1' ~ 'CM084269.1',
+                                            seqid %in% 'NC_091140.1' ~ 'CM084270.1',
+                                            seqid %in% 'NC_091141.1' ~ 'CM084271.1',
+                                            seqid %in% 'NC_091142.1' ~ 'CM084272.1',
+                                            seqid %in% 'NC_091143.1' ~ 'CM084273.1',
+                                            seqid %in% 'NC_091144.1' ~ 'CM084274.1',
+                                            seqid %in% 'NC_091145.1' ~ 'CM084275.1',
+                                            seqid %in% 'NC_091146.1' ~ 'CM084276.1',
+                                            seqid %in% 'NC_091147.1' ~ 'CM084277.1',
+                                            seqid %in% 'NC_091148.1' ~ 'CM084278.1',
+                                            seqid %in% 'NC_091149.1' ~ 'CM084279.1'),
+                          chrom_num = case_when(chromosome  %in% 'CM084264.1' ~1, 
+                                                chromosome  %in% 'CM084265.1' ~2,
+                                                chromosome  %in% 'CM084266.1' ~3,
+                                                chromosome  %in% 'CM084267.1' ~4,
+                                                chromosome  %in% 'CM084268.1' ~5,
+                                                chromosome  %in% 'CM084269.1' ~6,
+                                                chromosome  %in% 'CM084270.1' ~7,
+                                                chromosome  %in% 'CM084271.1' ~8,
+                                                chromosome  %in% 'CM084272.1' ~9,
+                                                chromosome  %in% 'CM084273.1' ~10,
+                                                chromosome  %in% 'CM084274.1' ~11,
+                                                chromosome  %in% 'CM084275.1' ~12,
+                                                chromosome  %in% 'CM084276.1' ~13,
+                                                chromosome  %in% 'CM084277.1' ~14,
+                                                chromosome  %in% 'CM084278.1' ~15,
+                                                chromosome  %in% 'CM084279.1' ~16),
+                          transcript_id = gsub('.*transcript_id=', '', attributes),
+                          protein_id =gsub(".*NAME=(.+);.*", "\\1", attributes)) %>% 
+          # dplyr::rename(chromosme = seqid) %>% 
+          dplyr::select(type, chromosome, chrom_num, start, end, transcript_id, protein_id)
+
+
+# rchromosome regions only
+chromosome_regions.df <- reference.df %>% 
+                              dplyr::filter(type %in% 'region') %>% 
+                              select(!c(type,transcript_id, protein_id))
+for (i in 2:nrow(chromosome_regions.df)) { # now cange the start point to be +1bp of the previous chromosome end point
+  chromosome_regions.df$start[i] = chromosome_regions.df$end[(i-1)] + 1
+}
+
+
+# edi the bonferroni correct qtl results to merge with chromosome_regions.df
+Bonferroni_qtl.df  <- Bonferroni_qtl.df %>% mutate(chromosome = paste0(chromosome,".1"))
+
+# merge with chromosome_regions.df
+Bonferroni_qtl_manhattan.df <- merge(chromosome_regions.df, 
+                                     Bonferroni_qtl.df, 
+                                     by = c("chromosome", "chrom_num")) %>% 
+                           mutate(locus = paste0(chromosome,'_',position),
+                           position = as.numeric(position) + as.numeric(start),
+                           ) %>% 
+                          rename(SNP = locus,
+                                 Chromosome = chrom_num,
+                                 Position = position) %>% 
+                          select(SNP, Chromosome, Position, effect, pvalue) %>% 
+                          tidyr::pivot_wider(id_cols = c("SNP","Chromosome","Position"),
+                                             names_from = "effect",
+                                             values_from = "pvalue") %>% 
+                          select(SNP, Chromosome, Position, treatment)
+
+CMplot(Bonferroni_qtl_manhattan.df,
+       type="p",
+       plot.type="c",
+       r=0.4,
+       col=c("grey30","grey60"),
+       chr.labels=paste("Chr",c(1:16),sep=""),
+       threshold=c(1e-6,1e-4),
+       cir.chr.h=1.5,
+       amplify=TRUE,
+       threshold.lty=c(1,2),
+       threshold.col=c("red","blue"),
+       signal.line=1,
+       signal.col=c("red","green"),
+       chr.den.col=c("darkgreen","yellow","red"),
+       #bin.size=1e6, # count of SNPs ber 1 Mb sliding window
+       bin.size=1e8, # count of SNPs ber 10 Mb sliding window
+       outward=FALSE,
+       file="jpg",
+       file.name=NULL,
+       dpi=300,
+       file.output=TRUE,
+       verbose=TRUE,
+       width=10,
+       height=10)
+
+CMplot(Bonferroni_qtl_manhattan.df,type="p",plot.type="c",LOG10=TRUE,outward=TRUE,col=matrix(c("#4DAF4A",NA,NA,"dodgerblue4",
+         "deepskyblue",NA,"dodgerblue1", "olivedrab3", "darkgoldenrod1"), nrow=3, byrow=TRUE),
+         chr.labels=paste("Chr",c(1:16),sep=""),threshold=NULL,r=1.2,cir.chr.h=1.5,axis.cex=1,
+         cir.band=1,file="jpg", file.name=NULL,dpi=300,chr.den.col="black",file.output=TRUE,verbose=TRUE,
+         width=10,height=10)
+
+loci <- F1F2F3_All.FSTMat %>% mutate(chromosome = gsub("_.*", "\\1", LocusName),
+                              position = gsub(".*_", "", LocusName)) %>% select(chromosome, 
+                                                                                           position)
+
+loci_master <- merge(loci, chromosome_regions.df) %>% 
+                    mutate(locus = paste0(chromosome,'_',position),
+                           position = as.numeric(position) + as.numeric(start),
+                           ) %>% 
+                    rename(SNP = locus,
+                           CHR = chrom_num,
+                           BP = position) %>% 
+                    select(SNP, CHR, BP)
+
+
+out_trim.2 <- out_trim$results  %>% 
+                      rename(SNP = LocusName) %>%  
+                      select(SNP, FST, pvalues, qvalues, OutlierFlag)
+F1F2F3_All.fstMaster <- merge(loci_master, out_trim.2, by = "SNP")
+library(qqman)
+gwasResults
+
+# Make the Manhattan plot on the gwasResults dataset
+manhattan( (F1F2F3_All.fstMaster %>% na.omit()), chr="CHR", bp="BP", snp="SNP", p="pvalues")
+
+# what are the outliers? 
+View(F1F2F3_All.fstMaster)
+View( out_trim$results)
+# CM084278.1_20591212 and CM084278.1_24948349
 ```

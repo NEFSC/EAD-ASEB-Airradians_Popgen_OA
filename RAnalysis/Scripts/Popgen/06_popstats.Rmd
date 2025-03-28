@@ -25,8 +25,8 @@ author: "Samuel Gurr"
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 # SET WORKING DIRECTORY 
-#knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
-knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+#knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
 ```
 
 ## load libraries
@@ -729,7 +729,8 @@ fst.label = expression(italic("F")[ST])
 mid = max(fst.df$Fst) / 2
 
 # Plot heatmap
-ggplot(data = fst.df, 
+all_fst_heatmap <- 
+  ggplot(data = fst.df, 
        aes(x = Site1, 
            y = Site2, 
            fill = Fst))+
@@ -760,6 +761,10 @@ path_out <- "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Po
 ggsave(
   paste0(path_out, "/All_Fst.png"), 
          width = 8, height = 6, dpi = 600)
+
+pdf("C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/RAnalysis/Output/Popgen/All_Fst.pdf", width = 6, height = 4)
+print(all_fst_heatmap)
+dev.off()
 ```
 
 
@@ -1369,6 +1374,8 @@ All.vcf <- vcfR::read.vcfR(here::here(getwd(),
 F1F2F3_LOW_MOD.vcf <- All.vcf[,c(1,27:139, 
                               153:177, 198:250, 
                               295:392)] 
+
+F1F2F3_All.vcf <- All.vcf[,c(1,27:392)] 
 # convert
 convertVCFtoCount3 <- function(string){
     # This function assumes 0 for reference
@@ -1377,29 +1384,29 @@ convertVCFtoCount3 <- function(string){
     odd = seq(1, length(a), by=2)
     a[odd] + a[odd+1]
  }
-LowvMod.vcf.gen <- F1F2F3_LOW_MOD.vcf@gt[,-1]
-system.time(LowvMod.gen_table <- matrix(convertVCFtoCount3(LowvMod.vcf.gen), ncol=ncol(LowvMod.vcf.gen)))
+F1F2F3_All.vcf.gen <- F1F2F3_All.vcf@gt[,-1]
+system.time(F1F2F3_All.gen_table <- matrix(convertVCFtoCount3(F1F2F3_All.vcf.gen), ncol=ncol(F1F2F3_All.vcf.gen)))
 # user  system elapsed 
 # 0.57    0.00    1.38
 
 # finally, we are here
-LowvMod.SNPdata <- t(LowvMod.gen_table) # transpose, gen_table has columns as indivs, rows as loci, switch
+F1F2F3_All.SNPdata <- t(F1F2F3_All.gen_table) # transpose, gen_table has columns as indivs, rows as loci, switch
 
 ############################ #
 # locusNames ############### #
 ############################ #
 
-LowvMod_locinames <- paste(F1F2F3_LOW_MOD.vcf@fix[,"CHROM"], 
-                           F1F2F3_LOW_MOD.vcf@fix[,"POS"], sep="_")
-length(LowvMod_locinames) == nrow(LowvMod.gen_table)
+F1F2F3_All_locinames <- paste(F1F2F3_All.vcf@fix[,"CHROM"], 
+                           F1F2F3_All.vcf@fix[,"POS"], sep="_")
+length(F1F2F3_All_locinames) == nrow(F1F2F3_All.gen_table)
 
 ############################ #
 # popNames - genlight object was created in line 157 from F1F2F3_LOW_MOD.vcf 
 ############################ #
 
-LowvMod_gen@strata # grab population from here, first make sure its the same order as the matrix above
+All_gen@strata # grab population from here, first make sure its the same order as the matrix above
 # LowvMod_gen@strata$ID == rownames(LowvMod_matrix) # all MUST BE TRUE! good to go
-table(LowvMod_gen@strata$Population) # call LowvMod_gen@strata$Population in ```MakeDiploidFSTMat```
+table(All_gen@strata$Population) # call LowvMod_gen@strata$Population in ```MakeDiploidFSTMat```
 # F1_Low F1_Moderate      F2_Low F2_Moderate      F3_Low F3_Moderate 
 #     58          55          32          46          49          49
 ```
@@ -1413,12 +1420,99 @@ table(LowvMod_gen@strata$Population) # call LowvMod_gen@strata$Population in ```
 # SNPmat     = LowvMod.SNPdata 
 # locusNames = LowvMod.locinames
 # popNames   = LowvMod_gen@strata$Population
-
+?MakeDiploidFSTMat
 # RUN it output as 'LowvMod.OutFLANK.Fst'
-LowvMod.FSTMat <- OutFLANK::MakeDiploidFSTMat(LowvMod.SNPdata, 
-                                              locusNames = LowvMod_locinames, 
-                                              popNames = LowvMod_gen@strata$Population)# MakeDiploidFSTMat(SNPmat,locusNames,popNames)
-head(LowvMod.FSTMat) # view first few rows
+F1F2F3_All.FSTMat <- OutFLANK::MakeDiploidFSTMat(F1F2F3_All.SNPdata, 
+                                                 locusNames = F1F2F3_All_locinames, 
+                                                 popNames = All_gen@strata$Population)# MakeDiploidFSTMat(SNPmat,locusNames,popNames)
+head(F1F2F3_All.FSTMat) # view first few rows
+
+```
+
+
+```{r manhattan plot}
+
+# gff <- read.table("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff", sep="\t", quote="")
+reference.df <- ape::read.gff("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff") %>% 
+            dplyr::filter(type %in% c('region','mRNA')) %>%  # get the region of the chromosome contains protein name, contains all exons
+            dplyr::filter(!grepl("NW_",seqid)) %>% 
+            dplyr::mutate(attributes = paste0('NAME=',(gsub('.*;product=', '', attributes))),
+                          chromosome = case_when(seqid %in% 'NC_091134.1' ~ 'CM084264.1',
+                                            seqid %in% 'NC_091135.1' ~ 'CM084265.1',
+                                            seqid %in% 'NC_091136.1' ~ 'CM084266.1',
+                                            seqid %in% 'NC_091137.1' ~ 'CM084267.1',
+                                            seqid %in% 'NC_091138.1' ~ 'CM084268.1',
+                                            seqid %in% 'NC_091139.1' ~ 'CM084269.1',
+                                            seqid %in% 'NC_091140.1' ~ 'CM084270.1',
+                                            seqid %in% 'NC_091141.1' ~ 'CM084271.1',
+                                            seqid %in% 'NC_091142.1' ~ 'CM084272.1',
+                                            seqid %in% 'NC_091143.1' ~ 'CM084273.1',
+                                            seqid %in% 'NC_091144.1' ~ 'CM084274.1',
+                                            seqid %in% 'NC_091145.1' ~ 'CM084275.1',
+                                            seqid %in% 'NC_091146.1' ~ 'CM084276.1',
+                                            seqid %in% 'NC_091147.1' ~ 'CM084277.1',
+                                            seqid %in% 'NC_091148.1' ~ 'CM084278.1',
+                                            seqid %in% 'NC_091149.1' ~ 'CM084279.1'),
+                          chrom_num = case_when(chromosome  %in% 'CM084264.1' ~1, 
+                                                chromosome  %in% 'CM084265.1' ~2,
+                                                chromosome  %in% 'CM084266.1' ~3,
+                                                chromosome  %in% 'CM084267.1' ~4,
+                                                chromosome  %in% 'CM084268.1' ~5,
+                                                chromosome  %in% 'CM084269.1' ~6,
+                                                chromosome  %in% 'CM084270.1' ~7,
+                                                chromosome  %in% 'CM084271.1' ~8,
+                                                chromosome  %in% 'CM084272.1' ~9,
+                                                chromosome  %in% 'CM084273.1' ~10,
+                                                chromosome  %in% 'CM084274.1' ~11,
+                                                chromosome  %in% 'CM084275.1' ~12,
+                                                chromosome  %in% 'CM084276.1' ~13,
+                                                chromosome  %in% 'CM084277.1' ~14,
+                                                chromosome  %in% 'CM084278.1' ~15,
+                                                chromosome  %in% 'CM084279.1' ~16),
+                          transcript_id = gsub('.*transcript_id=', '', attributes),
+                          protein_id =gsub(".*NAME=(.+);.*", "\\1", attributes)) %>% 
+          # dplyr::rename(chromosme = seqid) %>% 
+          dplyr::select(type, chromosome, chrom_num, start, end, transcript_id, protein_id)
+
+
+# rchromosome regions only
+chromosome_regions.df <- reference.df %>% 
+                              dplyr::filter(type %in% 'region') %>% 
+                              select(!c(type,transcript_id, protein_id))
+for (i in 2:nrow(chromosome_regions.df)) { # now cange the start point to be +1bp of the previous chromosome end point
+  chromosome_regions.df$start[i] = chromosome_regions.df$end[(i-1)] + 1
+}
+
+
+
+loci <- F1F2F3_All.FSTMat %>% mutate(chromosome = gsub("_.*", "\\1", LocusName),
+                              position = gsub(".*_", "", LocusName)) %>% select(chromosome, 
+                                                                                           position)
+
+loci_master <- merge(loci, chromosome_regions.df) %>% 
+                    mutate(locus = paste0(chromosome,'_',position),
+                           position = as.numeric(position) + as.numeric(start),
+                           ) %>% 
+                    rename(SNP = locus,
+                           CHR = chrom_num,
+                           BP = position) %>% 
+                    select(SNP, CHR, BP)
+
+
+out_trim.2 <- out_trim$results  %>% 
+                      rename(SNP = LocusName) %>%  
+                      select(SNP, FST, pvalues, qvalues, OutlierFlag)
+F1F2F3_All.fstMaster <- merge(loci_master, out_trim.2, by = "SNP")
+library(qqman)
+gwasResults
+
+# Make the Manhattan plot on the gwasResults dataset
+manhattan( (F1F2F3_All.fstMaster %>% na.omit()), chr="CHR", bp="BP", snp="SNP", p="pvalues")
+
+# what are the outliers? 
+View(F1F2F3_All.fstMaster)
+View( out_trim$results)
+# CM084278.1_20591212 and CM084278.1_24948349
 ```
 
 ## Data checks: Heterozygosity vs. FST
@@ -1426,7 +1520,7 @@ head(LowvMod.FSTMat) # view first few rows
 Here, you can see how some of the low H loci have high FST. 
 These are all neutral loci in the simulation, and it is important to exclude them from the OutFLANK algorithm.
 ```{r, Check He vs. Fst}
-plot(LowvMod.FSTMat$He, LowvMod.FSTMat$FST)
+plot(F1F2F3_All.FSTMat$He, F1F2F3_All.FSTMat$FST)
 ```
 
 ## Data checks: FST vs. FSTNoCorr
@@ -1438,8 +1532,9 @@ plot(LowvMod.FSTMat$He, LowvMod.FSTMat$FST)
 * no loci deviate from the linear relationship (view below)
 
 ```{r, Check Dst v FSTNoCorr}
-plot(LowvMod.FSTMat$FST, LowvMod.FSTMat$FSTNoCorr)
+plot(F1F2F3_All.FSTMat$FST, F1F2F3_All.FSTMat$FSTNoCorr)
 abline(0,1)
+
 ```
 
 ## Data prep: decide which SNPs to use for calibrating the null distribution of Fst
@@ -1459,13 +1554,13 @@ library(OutFLANK)
 View(LowvMod.FSTMat)
 out_trim <- OutFLANK(
   # (LowvMod.FSTMat %>% filter(!FST > 0.11)), # there are 2 resulting outliers, very high Fst, omit
-  LowvMod.FSTMat,
+  F1F2F3_All.FSTMat,
     NumberOfSamples=6, # F1M, F1L, F2M, F2L, F3M, F3L = 6
     # qthreshold = 0.03, 
     LeftTrimFraction = 0.05, # lower Fst
     RightTrimFraction = 0.05, # upper Fst
     qthreshold = 0.05, # no outliers detected for high FSt
-    Hmin = 0.3 # 0.1
+    Hmin = 0.1 # 0.1
   )
 str(out_trim)
 head(out_trim$results)
