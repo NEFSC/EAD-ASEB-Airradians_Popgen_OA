@@ -41,10 +41,17 @@ library(scales)
 
 ```{r load significant qtl loci}
 
+
 # read lme4qtl results
-all_qtl_interaction <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_bonferroni_genXtreatment.csv", sep = ',') %>%  select (-X)
-all_qtl_generation  <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_bonferroni_gen_only.csv", sep = ',') %>%  select (-X)
-all_qtl_treatment   <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_bonferroni_treatment_only.csv", sep = ',') %>%  select (-X)
+lowVmod_qtl_interaction <- read.csv("RAnalysis/Output/Popgen/qtl/LowvMod/results/LowvMod_QTL_bonferroni_genXtreatment.csv", sep = ',') %>%  select (-X)
+lowVmod_qtl_generation  <- read.csv("RAnalysis/Output/Popgen/qtl/LowvMod/results/LowvMod_QTL_bonferroni_gen_only.csv", sep = ',') %>%  select (-X)
+lowVmod_qtl_treatment   <- read.csv("RAnalysis/Output/Popgen/qtl/LowvMod/results/LowvMod_QTL_bonferroni_treatment_only.csv", sep = ',') %>%  select (-X)
+
+
+# read lme4qtl results
+all_qtl_interaction <- read.csv("RAnalysis/Output/Popgen/qtl/All/results/All_QTL_bonferroni_genXtreatment.csv", sep = ',') %>%  select (-X)
+all_qtl_generation  <- read.csv("RAnalysis/Output/Popgen/qtl/All/results/All_QTL_bonferroni_gen_only.csv", sep = ',') %>%  select (-X)
+all_qtl_treatment   <- read.csv("RAnalysis/Output/Popgen/qtl/All/results/All_QTL_bonferroni_treatment_only.csv", sep = ',') %>%  select (-X)
 
 ```
 
@@ -109,7 +116,7 @@ unique(exon.df$chrom_num) # good, the 16 chromosomes
 * if inside coding region, output exon for location and distance_bp = 0,
 if outside of the nearest coding region, output intron (non-coding region) for location and distance_bp as the position from start or end
 
-```{r merge qtl loci with annotation}
+```{r All, merge qtl loci with annotation}
 
 
 all_qtl_interaction.annotated <- unique(exon.df %>% 
@@ -128,7 +135,7 @@ all_qtl_interaction.annotated <- unique(exon.df %>%
                                                                (position <= start | position >= end) ~ 'intron')) %>% 
                                   select(locus, chrom_num, position, location, distance_bp,  protein_id, start, end))
 
-write.csv(all_qtl_interaction.annotated, "RAnalysis/Output/Popgen/qtl/All_QTL_genXtreatment_annotated.csv")
+write.csv(all_qtl_interaction.annotated, "RAnalysis/Output/Popgen/qtl/All/results/annotated/All_QTL_genXtreatment_annotated.csv")
 unique(all_qtl_interaction$locus)
 unique(all_qtl_interaction.annotated$locus)
 # 5 of 13 loci containing significant interaction with generation x treatment, also mapped to an exon (coding region)
@@ -150,7 +157,7 @@ all_qtl_generation.annotated <- unique(exon.df %>%
                                                                (position <= start | position >= end) ~ 'intron')) %>% 
                                   select(locus, chrom_num, position, location, distance_bp,  protein_id, start, end))
 
-write.csv(all_qtl_generation.annotated, "RAnalysis/Output/Popgen/qtl/All_QTL_gen_annotated.csv")
+write.csv(all_qtl_generation.annotated, "RAnalysis/Output/Popgen/qtl/All/results/annotated/All_QTL_gen_annotated.csv")
 unique(all_qtl_generation$locus)
 unique(all_qtl_generation.annotated$locus)
 # 17 of 47  loci containing significant main effect of generation, also mapped to an exon (coding region)
@@ -172,12 +179,84 @@ all_qtl_treatment.annotated <- unique(exon.df %>%
                                                                (position <= start | position >= end) ~ 'intron')) %>% 
                                   select(locus, chrom_num, position, location, distance_bp,  protein_id, start, end))
 
-write.csv(all_qtl_treatment.annotated, "RAnalysis/Output/Popgen/qtl/All_QTL_treatment_annotated.csv")
-
+write.csv(all_qtl_treatment.annotated, "RAnalysis/Output/Popgen/qtl/All/results/annotated/All_QTL_treatment_annotated.csv")
 unique(all_qtl_treatment$locus)
 unique(all_qtl_treatment.annotated$locus)
+# 6 of 22  loci containing significant main effect of treatment, also mapped to an exon (coding region)
+
 ```
 
+
+
+```{r Low v Mod, merge qtl loci with annotation}
+
+
+lowVmod_qtl_interaction.annotated <- unique(exon.df %>% 
+                                  left_join(lowVmod_qtl_interaction, by = c("chromosome","chrom_num")) %>% 
+                                  # filter(position >= start & position <= end) %>% # exact position
+                                  filter(position >= start-100 & position <= end+100) %>% # within 100 bp of nearest exon
+                                  mutate(up_downstream = case_when(
+                                                                  position < start ~ 'upstream',
+                                                                  position > end ~ 'downstream',
+                                                                  TRUE ~ 'exon'),
+                                         distance_bp = case_when(
+                                                              up_downstream %in% 'upstream' ~ start - position, 
+                                                              up_downstream %in% 'downstream' ~ position - end, 
+                                                              TRUE ~ 0),
+                                         location = case_when((position >= start & position <= end) ~ 'exon',
+                                                               (position <= start | position >= end) ~ 'intron')) %>% 
+                                  select(locus, chrom_num, position, location, distance_bp,  protein_id, start, end))
+
+write.csv(lowVmod_qtl_interaction.annotated, "RAnalysis/Output/Popgen/qtl/LowvMod/results/annotated/LowvMod_QTL_genXtreatment_annotated.csv")
+unique(lowVmod_qtl_interaction$locus)
+unique(lowVmod_qtl_interaction.annotated$locus)
+# 2 of 9 loci containing significant interaction with generation x treatment, also mapped to an exon (coding region)
+
+
+lowVmod_qtl_generation.annotated <- unique(exon.df %>% 
+                                  left_join(lowVmod_qtl_generation, by = c("chromosome","chrom_num")) %>% 
+                                  # filter(position >= start & position <= end) %>% # exact position
+                                  filter(position >= start-100 & position <= end+100) %>% # within 100 bp of nearest exon
+                                  mutate(up_downstream = case_when(
+                                                                  position < start ~ 'upstream',
+                                                                  position > end ~ 'downstream',
+                                                                  TRUE ~ 'exon'),
+                                         distance_bp = case_when(
+                                                              up_downstream %in% 'upstream' ~ start - position, 
+                                                              up_downstream %in% 'downstream' ~ position - end, 
+                                                              TRUE ~ 0),
+                                         location = case_when((position >= start & position <= end) ~ 'exon',
+                                                               (position <= start | position >= end) ~ 'intron')) %>% 
+                                  select(locus, chrom_num, position, location, distance_bp,  protein_id, start, end))
+
+write.csv(lowVmod_qtl_generation.annotated, "RAnalysis/Output/Popgen/qtl/LowvMod/results/annotated/LowvMod_QTL_gen_annotated.csv")
+unique(lowVmod_qtl_generation$locus)
+unique(lowVmod_qtl_generation.annotated$locus)
+# 15 of 41  loci containing significant main effect of generation, also mapped to an exon (coding region)
+
+
+lowVmod_qtl_treatment.annotated <- unique(exon.df %>% 
+                                left_join(lowVmod_qtl_treatment, by = c("chromosome","chrom_num")) %>% 
+                                # filter(position >= start & position <= end) %>% # exact position
+                                  filter(position >= start-100 & position <= end+100) %>% # within 100 bp of nearest exon
+                                  mutate(up_downstream = case_when(
+                                                                  position < start ~ 'upstream',
+                                                                  position > end ~ 'downstream',
+                                                                  TRUE ~ 'exon'),
+                                         distance_bp = case_when(
+                                                              up_downstream %in% 'upstream' ~ start - position, 
+                                                              up_downstream %in% 'downstream' ~ position - end, 
+                                                              TRUE ~ 0),
+                                         location = case_when((position >= start & position <= end) ~ 'exon',
+                                                               (position <= start | position >= end) ~ 'intron')) %>% 
+                                  select(locus, chrom_num, position, location, distance_bp,  protein_id, start, end))
+
+
+write.csv(lowVmod_qtl_treatment.annotated, "RAnalysis/Output/Popgen/qtl/LowvMod/results/annotated/LowvMod_QTL_treatment_annotated.csv")
+unique(lowVmod_qtl_treatment$locus)
+unique(lowVmod_qtl_treatment.annotated$locus)
+# 3 of 16  loci containing significant main effect of treatment, also mapped to an exon (coding region)
+```
 
 
 ### DPCA for each of these subsets
@@ -206,6 +285,15 @@ All.vcf <- vcfR::read.vcfR(here::here(getwd(),
 
 # filter out F0, retain all other individuals!
 F1F2F3_All.vcf <- All.vcf[,c(1,27:392)] 
+
+# filter out F0 and High treatment, reatain low v Mod
+F1F2F3_LowvMod.vcf <- All.vcf[,c(1,27:139, #F1
+                              153:177, 198:250, # F2
+                              295:392)] # F3
+
+# F1_LowvMod.vcf <- All.vcf[,c(1,27:139)] #F1
+# F2_LowvMod.vcf <- All.vcf[,c(1,153:177, 198:250)] # F2
+# F3_LowvMod.vcf <- All.vcf[,c(1,295:392)] # F3
 ```
 
 * (2) metadata based on individual ids (need this for the 'pop' in genind object afterwart)
@@ -241,6 +329,15 @@ All.metadata <- as.data.frame(matrix(ncol = 1,
 
 F1F2F3_All.metadata     <- All.metadata %>% dplyr::filter(id %in%
                                                             colnames(F1F2F3_All.vcf@gt[,2:length(colnames(F1F2F3_All.vcf@gt))]))
+
+F1F2F3_LowvMod.metadata     <- All.metadata %>% dplyr::filter(id %in%
+                                                            colnames(F1F2F3_LowvMod.vcf@gt[,2:length(colnames(F1F2F3_LowvMod.vcf@gt))]))
+# F1_LowvMod.metadata     <- All.metadata %>% dplyr::filter(id %in%
+#                                                             colnames(F1_LowvMod.vcf@gt[,2:length(colnames(F1_LowvMod.vcf@gt))]))
+# F2_LowvMod.metadata     <- All.metadata %>% dplyr::filter(id %in%
+#                                                             colnames(F2_LowvMod.vcf@gt[,2:length(colnames(F2_LowvMod.vcf@gt))]))
+# F3_LowvMod.metadata     <- All.metadata %>% dplyr::filter(id %in%
+#                                                             colnames(F3_LowvMod.vcf@gt[,2:length(colnames(F3_LowvMod.vcf@gt))]))
 ```
 
 (3) convert vf to matrix to subset based on target loci 
@@ -252,8 +349,7 @@ F1F2F3_All.metadata     <- All.metadata %>% dplyr::filter(id %in%
 
 * target outout: All_gen (contians F1, F2, and F3 offspring)
 
-```{r build genind}
-
+```{r All, build genind}
 
 # first build a preliminary genind, we can convert this to a matrix
 F1F2F3_All.gen   <- F1F2F3_All.vcf %>% vcfR::vcfR2genind() 
@@ -286,6 +382,86 @@ Qtl_treatment.GenoM <- as.matrix(Qtl_treatment.gen)
 ```
 
 
+```{r LowvMod, build genind}
+
+# first build a preliminary genind, we can convert this to a matrix
+F1F2F3_LowvMod.gen   <- F1F2F3_LowvMod.vcf %>% vcfR::vcfR2genind() 
+# F1_LowvMod.gen       <- F1_LowvMod.vcf %>% vcfR::vcfR2genind() 
+# F2_LowvMod.gen       <- F2_LowvMod.vcf %>% vcfR::vcfR2genind() 
+# F3_LowvMod.gen       <- F3_LowvMod.vcf %>% vcfR::vcfR2genind() 
+
+
+# All  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+ind.LowvMod        = as.character(F1F2F3_LowvMod.metadata$id) # individual ID
+gen_pCO2.LowvMod   = as.character(F1F2F3_LowvMod.metadata$gen_treatment) # our metadata to calc pairwise fst
+strata_df.LowvMod  = data.frame(ID = ind.LowvMod, Population = gen_pCO2.LowvMod) # vcf2genind requires a strata dataframe with id and population
+
+
+# build genind object
+LowvMod_gen <- vcfR::vcfR2genind(F1F2F3_LowvMod.vcf, sep = "[|/]", pop = strata_df.LowvMod$Population, strata = strata_df.LowvMod)
+LowvMod_gen # 289 individuals; 2,947 loci; 5,894 alleles
+popNames(LowvMod_gen) # "F1_Low"      "F1_Moderate" "F2_Low"      "F2_Moderate" "F3_Low"      "F3_Moderate"
+
+# subset of loci in the main genind object and convert to matrix
+LowvMod_Qtl_interaction.gen   <- LowvMod_gen[, LowvMod_gen$loc.fac %in% gsub("[.].*","", lowVmod_qtl_interaction$locus)]
+LowvMod_Qtl_interaction.GenoM <- as.matrix(LowvMod_Qtl_interaction.gen)
+
+LowvMod_Qtl_generation.gen    <- LowvMod_gen[, LowvMod_gen$loc.fac %in% gsub("[.].*","", lowVmod_qtl_generation$locus)]
+LowvMod_Qtl_generation.GenoM  <- as.matrix(LowvMod_Qtl_generation.gen)
+
+LowvMod_Qtl_treatment.gen     <- LowvMod_gen[, LowvMod_gen$loc.fac %in% gsub("[.].*","", lowVmod_qtl_treatment$locus)]
+LowvMod_Qtl_treatment.GenoM   <- as.matrix(LowvMod_Qtl_treatment.gen)
+
+
+
+# F1  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+F1_ind.LowvMod        = as.character(F1_LowvMod.metadata$id) # individual ID
+F1_gen_pCO2.LowvMod   = as.character(F1_LowvMod.metadata$gen_treatment) # our metadata to calc pairwise fst
+F1_strata_df.LowvMod  = data.frame(ID = F1_ind.LowvMod, Population = F1_gen_pCO2.LowvMod) # vcf2genind requires a strata dataframe with id and population
+# build genind object
+F1_LowvMod_gen <- vcfR::vcfR2genind(F1_LowvMod.vcf, sep = "[|/]", pop = F1_strata_df.LowvMod$Population, strata = F1_strata_df.LowvMod)
+F1_LowvMod_gen # 289 individuals; 2,947 loci; 5,894 alleles
+popNames(F1_LowvMod_gen) # "F1_Low"      "F1_Moderate" "F2_Low"      "F2_Moderate" "F3_Low"      "F3_Moderate"
+# subset of loci in the main genind object and convert to matrix
+F1_LowvMod_Qtl_treatment.gen     <- F1_LowvMod_gen[, F1_LowvMod_gen$loc.fac %in% gsub("[.].*","", lowVmod_qtl_treatment$locus)]
+F1_LowvMod_Qtl_treatment.GenoM   <- as.matrix(LowvMod_Qtl_treatment.gen)
+
+
+
+
+
+
+# F2   :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+F2_ind.LowvMod        = as.character(F2_LowvMod.metadata$id) # individual ID
+F2_gen_pCO2.LowvMod   = as.character(F2_LowvMod.metadata$gen_treatment) # our metadata to calc pairwise fst
+F2_strata_df.LowvMod  = data.frame(ID = F2_ind.LowvMod, Population = F2_gen_pCO2.LowvMod) # vcf2genind requires a strata dataframe with id and population
+# build genind object
+F2_LowvMod_gen <- vcfR::vcfR2genind(F2_LowvMod.vcf, sep = "[|/]", pop = F2_strata_df.LowvMod$Population, strata = F2_strata_df.LowvMod)
+F2_LowvMod_gen # 289 individuals; 2,947 loci; 5,894 alleles
+popNames(F2_LowvMod_gen) # "F2_Low"      "F2_Moderate" "F2_Low"      "F2_Moderate" "F3_Low"      "F3_Moderate"
+# subset of loci in the main genind object and convert to matrix
+F2_LowvMod_Qtl_treatment.gen     <- F2_LowvMod_gen[, F2_LowvMod_gen$loc.fac %in% gsub("[.].*","", lowVmod_qtl_treatment$locus)]
+F2_LowvMod_Qtl_treatment.GenoM   <- as.matrix(LowvMod_Qtl_treatment.gen)
+
+
+
+
+
+# F3  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+F3_ind.LowvMod        = as.character(F3_LowvMod.metadata$id) # individual ID
+F3_gen_pCO2.LowvMod   = as.character(F3_LowvMod.metadata$gen_treatment) # our metadata to calc pairwise fst
+F3_strata_df.LowvMod  = data.frame(ID = F3_ind.LowvMod, Population = F3_gen_pCO2.LowvMod) # vcF3genind requires a strata dataframe with id and population
+# build genind object
+F3_LowvMod_gen <- vcfR::vcfR2genind(F3_LowvMod.vcf, sep = "[|/]", pop = F3_strata_df.LowvMod$Population, strata = F3_strata_df.LowvMod)
+F3_LowvMod_gen # 289 individuals; 2,947 loci; 5,894 alleles
+popNames(F3_LowvMod_gen) # "F3_Low"      "F3_Moderate" "F3_Low"      "F3_Moderate" "F3_Low"      "F3_Moderate"
+# subset of loci in the main genind object and convert to matrix
+F3_LowvMod_Qtl_treatment.gen     <- F3_LowvMod_gen[, F3_LowvMod_gen$loc.fac %in% gsub("[.].*","", lowVmod_qtl_treatment$locus)]
+F3_LowvMod_Qtl_treatment.GenoM   <- as.matrix(LowvMod_Qtl_treatment.gen)
+
+```
+
+
 ```{r custom theme for plotting}
 # Custom theme for ggplot2
 custom_theme = theme(
@@ -305,7 +481,7 @@ custom_theme = theme(
 ```
 
 
-```{r DAPC run: gen * treatment interaction}
+```{r All DAPC run: gen * treatment interaction}
 
 # Perform cross validation to find the optimal number of PCs to retain in DAPC
 set.seed(123)
@@ -404,7 +580,7 @@ print(DPCA_QTL_gentreatment)
 dev.off()
 ```
 
-```{r DAPC run: gen main effect}
+```{r All DAPC run: gen main effect}
 
 # Perform cross validation to find the optimal number of PCs to retain in DAPC
 set.seed(123)
@@ -481,23 +657,47 @@ DPCA_QTL_generation <- ggplot(data = ind_coords.Qtl_generation, aes(x = Axis1, y
                             # colouring
                             scale_fill_manual(values = cols.Qtl_generation)+
                             scale_colour_manual(values = seq.Qtl_generation)+
-                            scale_alpha_manual(values = alpha.Qtl_treatment)+
+                            scale_alpha_manual(values = alpha.Qtl_generation)+
                             # custom shape
-                            scale_shape_manual(values = c(21,21, # F1 are circles
-                                                          22,22,22,# F2 are square
-                                                          24,24,24)) +# F3 are triannlge                            
+                            scale_shape_manual(values = c(21,22,24,21,22,24,21,22)) + # F1 are circles F2 are square    
                             # custom labels
                             labs(x = xlab.Qtl_generation, 
                                  y = ylab.Qtl_generation)+
                             ggtitle("QTL results generation main effect: DAPC") +
                             custom_theme
 
+ind_coords.Qtl_generation$Treatment <- gsub('.*_','',ind_coords.Qtl_generation$Site)
+DPCA_QTL_generation_facetted <- ggplot(data = ind_coords.Qtl_generation, aes(x = Axis1, y = Axis2))+
+                            geom_hline(yintercept = 0)+
+                            geom_vline(xintercept = 0)+
+                            # spider segments
+                            geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), size = 0.1, alpha = 0.2, show.legend = FALSE)+
+                            # points
+                            geom_point(aes(fill = Site, shape = Site, alpha = Generation), ,size = 3, show.legend = FALSE)+
+                            # colouring
+                            scale_fill_manual(values = cols.Qtl_generation)+
+                            scale_colour_manual(values = seq.Qtl_generation)+
+                            scale_alpha_manual(values = alpha.Qtl_generation)+
+                            # custom shape
+                            scale_shape_manual(values = c(21,22,24,21,22,24,21,22)) + # F1 are circles F2 are square    
+                            # custom labels
+                            labs(x = xlab.Qtl_generation, 
+                                 y = ylab.Qtl_generation)+
+                            ggtitle("QTL results generation main effect: DPCA")  +
+                            stat_ellipse(aes(group=Generation), type = "norm", position = "identity",level = 0.95, show.legend = FALSE) +
+                            facet_wrap(~Treatment, nrow = 3, ncol = 1,strip.position = "right") +
+                            custom_theme
+
 pdf("RAnalysis/Output/Popgen/qtl/All_QTL_gen_DAPC.pdf", width =6, height = 6)
 print(DPCA_QTL_generation)
 dev.off()
+
+pdf("RAnalysis/Output/Popgen/qtl/All/DPCA/All_QTL_generation_facetted_DPCA.pdf", width =3, height = 6)
+print(DPCA_QTL_generation_facetted)
+dev.off()
 ```
 
-```{r DAPC run: OA treatment main effect}
+```{r All DAPC run: OA treatment main effect}
 
 # Perform cross validation to find the optimal number of PCs to retain in DAPC
 set.seed(123)
@@ -576,19 +776,164 @@ DPCA_QTL_treatment <- ggplot(data = ind_coords.Qtl_treatment, aes(x = Axis1, y =
                             scale_colour_manual(values = seq.Qtl_treatment)+
                             scale_alpha_manual(values = alpha.Qtl_treatment)+
                             # custom shape
-                            scale_shape_manual(values = c(21,21, # F1 are circles
-                                                          22,22,22,# F2 are square
-                                                          24,24,24)) +# F3 are triannlge    
+                            scale_shape_manual(values = c(21,22,24,21,22,24,21,22)) + # F1 are circles F2 are square    
+  
                             # custom labels
                             labs(x = xlab.Qtl_treatment, 
                                  y = ylab.Qtl_treatment)+
                             ggtitle("QTL results treatment main effect: DAPC") +
                             custom_theme
 
-?scale_alpha_manual
 
-pdf("RAnalysis/Output/Popgen/qtl/All_QTL_treatment_DAPC.pdf", width =6, height = 6)
+DPCA_QTL_treatment_facetted <- ggplot(data = ind_coords.Qtl_treatment, aes(x = Axis1, y = Axis2))+
+                            geom_hline(yintercept = 0)+
+                            geom_vline(xintercept = 0)+
+                            # spider segments
+                            geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), size = 0.1, alpha = 0.2, show.legend = FALSE)+
+                            # points
+                            geom_point(aes(fill = Site, shape = Site, alpha = Generation), size = 3, show.legend = FALSE)+
+                            # centroids
+                            # geom_label(data = centroid.Qtl_treatment, 
+                            #            aes(label = Site, fill = Site), 
+                            #            size = 4, show.legend = FALSE)+
+                            # colouring
+                            scale_fill_manual(values = cols.Qtl_treatment)+
+                            scale_colour_manual(values = seq.Qtl_treatment)+
+                            scale_alpha_manual(values = alpha.Qtl_treatment)+
+                            # custom shape
+                            scale_shape_manual(values = c(21,22,24,21,22,24,21,22)) + # F1 are circles F2 are square    
+                            # custom labels
+                            labs(x = xlab.Qtl_treatment, 
+                                 y = ylab.Qtl_treatment)+
+                            ggtitle("QTL results treatment main effect: DPCA") +
+                            custom_theme +
+                            stat_ellipse(aes(col=Site), type = "norm", position = "identity",level = 0.95, show.legend = FALSE) +
+                            facet_wrap(~Generation, nrow = 3, ncol = 1,strip.position = "right")
+
+pdf("RAnalysis/Output/Popgen/qtl/All/DPCA/All_QTL_treatment_DPCA.pdf", width =6, height = 6)
 print(DPCA_QTL_treatment)
+dev.off()
+
+pdf("RAnalysis/Output/Popgen/qtl/All/DPCA/All_QTL_treatment_facetted_DPCA.pdf", width =3, height = 6)
+print(DPCA_QTL_treatment_facetted)
+dev.off()
+```
+
+
+```{r LowvMod DAPC run: OA treatment main effect}
+
+
+#  Low v Mod (all generations)  :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+
+# Perform cross validation to find the optimal number of PCs to retain in DAPC
+set.seed(123)
+x.Qtl_treatment             <-  tab(LowvMod_Qtl_treatment.gen, NA.method = "mean")
+crossval.Qtl_treatment      <-  xvalDapc(x.Qtl_treatment, LowvMod_Qtl_treatment.gen$pop, result = "groupMean", xval.plot = TRUE) # this takes a LONG TIME
+
+# Run a DAPC using site IDs as priors
+dapc1.Qtl_treatment = dapc(LowvMod_Qtl_treatment.gen, LowvMod_Qtl_treatment.gen$pop, n.pca = numPCs.Qtl_treatment, n.da = 3)
+
+# Analyse how much percent of genetic variance is explained by each axis
+percent.Qtl_treatment = dapc1.Qtl_treatment$eig/sum(dapc1.Qtl_treatment$eig)*100
+barplot(percent.Qtl_treatment, 
+        ylab = "Genetic variance explained by eigenvectors (%)", 
+        ylim = c(0,60),
+        names.arg = round(percent.Qtl_treatment, 1))
+
+# Create a data.frame containing individual coordinates
+ind_coords.Qtl_treatment = as.data.frame(dapc1.Qtl_treatment$ind.coord)
+
+# Rename columns of dataframe
+colnames(ind_coords.Qtl_treatment) = c("Axis1","Axis2", "Axis3")
+
+# Add a column containing individuals
+ind_coords.Qtl_treatment$Ind = indNames(LowvMod_Qtl_treatment.gen)
+
+# Add a column with the site IDs
+ind_coords.Qtl_treatment$Site = LowvMod_Qtl_treatment.gen$pop
+
+# Calculate centroid (average) position for each population
+centroid.Qtl_treatment = aggregate(cbind(Axis1, Axis2) ~ Site, data = ind_coords.Qtl_treatment, FUN = mean)
+
+# Add centroid coordinates to ind_coords dataframe
+ind_coords.Qtl_treatment = left_join(ind_coords.Qtl_treatment, centroid.Qtl_treatment, by = "Site", suffix = c("",".cen"))
+
+# Scatter plot axis 1 vs. 2
+ind_coords.Qtl_treatment <- ind_coords.Qtl_treatment  %>%  mutate(Generation = as.factor(gsub('_.*','', Site)))
+alpha.Qtl_treatment = c(0.2, 0.4 , 0.6)
+
+# color pallete
+levels(ind_coords.Qtl_treatment$Site) # "F1_Low"      "F1_Moderate" "F2_Low"      "F2_Moderate" "F3_Low"      "F3_Moderate"
+cols.Qtl_treatment = c("#009E73" , "#E69F00", "#009E73" , "#E69F00" ,"#009E73" , "#E69F00" )
+seq.Qtl_treatment = c("grey50" , "grey50", "grey50", "grey50", "grey50", "grey50")
+
+# Custom x and y labels
+xlab.Qtl_treatment = paste("Axis 1 (", format(round(percent.Qtl_treatment[1], 1), nsmall=1)," %)", sep="")
+ylab.Qtl_treatment = paste("Axis 2 (", format(round(percent.Qtl_treatment[2], 1), nsmall=1)," %)", sep="")
+
+
+
+
+DPCA_QTL_treatment <- ggplot(data = ind_coords.Qtl_treatment, aes(x = Axis1, y = Axis2))+
+                            geom_hline(yintercept = 0)+
+                            geom_vline(xintercept = 0)+
+                            # spider segments
+                            geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), size = 0.1, alpha = 0.2, show.legend = FALSE)+
+                            # points
+                            geom_point(aes(fill = Site, shape = Site, alpha = Generation), size = 3, show.legend = FALSE)+
+                            # centroids
+                            geom_label(data = centroid.Qtl_treatment, 
+                                       aes(label = Site, fill = Site), 
+                                       size = 4, show.legend = FALSE)+
+                            # colouring
+                            scale_fill_manual(values = cols.Qtl_treatment)+
+                            scale_colour_manual(values = seq.Qtl_treatment)+
+                            scale_alpha_manual(values = alpha.Qtl_treatment)+
+                            # custom shape
+                            scale_shape_manual(values = c(21,22,21,22,21,22)) + # F1 are circles F2 are square    
+                            # custom labels
+                            labs(x = xlab.Qtl_treatment, 
+                                 y = ylab.Qtl_treatment)+
+                            ggtitle("QTL results treatment main effect: DPCA") +
+                            custom_theme 
+
+
+
+
+DPCA_QTL_treatment_facetted <- ggplot(data = ind_coords.Qtl_treatment, aes(x = Axis1, y = Axis2))+
+                            geom_hline(yintercept = 0)+
+                            geom_vline(xintercept = 0)+
+                            # spider segments
+                            geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), size = 0.1, alpha = 0.2, show.legend = FALSE)+
+                            # points
+                            geom_point(aes(fill = Site, shape = Site, alpha = Generation), size = 3, show.legend = FALSE)+
+                            # centroids
+                            # geom_label(data = centroid.Qtl_treatment, 
+                            #            aes(label = Site, fill = Site), 
+                            #            size = 4, show.legend = FALSE)+
+                            # colouring
+                            scale_fill_manual(values = cols.Qtl_treatment)+
+                            scale_colour_manual(values = seq.Qtl_treatment)+
+                            scale_alpha_manual(values = alpha.Qtl_treatment)+
+                            # custom shape
+                            scale_shape_manual(values = c(21,22,21,22,21,22 # F1 are circles F2 are square
+                                                          )) +# F3 are trianlge    
+                            # custom labels
+                            labs(x = xlab.Qtl_treatment, 
+                                 y = ylab.Qtl_treatment)+
+                            ggtitle("QTL results treatment main effect: DPCA") +
+                            custom_theme +
+                            stat_ellipse(aes(col=Site), type = "norm", position = "identity",level = 0.95, show.legend = FALSE) +
+                            facet_wrap(~Generation, nrow = 3, ncol = 1,strip.position = "right")
+?facet_wrap
+
+pdf("RAnalysis/Output/Popgen/qtl/LowvMod/DPCA/LowvMod_QTL_treatment_DPCA.pdf", width =6, height = 6)
+print(DPCA_QTL_treatment)
+dev.off()
+
+pdf("RAnalysis/Output/Popgen/qtl/LowvMod/DPCA/LowvMod_QTL_treatment_facetted_DPCA.pdf", width =3, height = 6)
+print(DPCA_QTL_treatment_facetted)
 dev.off()
 ```
 

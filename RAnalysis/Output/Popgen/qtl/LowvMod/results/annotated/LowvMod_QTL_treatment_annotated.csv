@@ -1,0 +1,7 @@
+"","locus","chrom_num","position","location","distance_bp","protein_id","start","end"
+"1","CM084266_1_65580309.1",3,65580309,"exon",0,"triokinase/FMN cyclase-like%2C transcript variant X2",65549209,65619726
+"2","CM084266_1_65580309.1",3,65580309,"exon",0,"triokinase/FMN cyclase-like%2C transcript variant X1",65549209,65619723
+"3","CM084266_1_65580309.1",3,65580309,"exon",0,"triokinase/FMN cyclase-like%2C transcript variant X3",65549209,65619722
+"4","CM084266_1_65580309.1",3,65580309,"exon",0,"triokinase/FMN cyclase-like%2C transcript variant X4",65549209,65619720
+"5","CM084276_1_1625292.1",13,1625292,"exon",0,"uncharacterized protein",1443785,1625425
+"6","CM084278_1_22667297.1",15,22667297,"exon",0,"nucleolar and coiled-body phosphoprotein 1-like",22605282,22722427

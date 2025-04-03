@@ -27,6 +27,7 @@ library(lme4qtl)
 library(devtools)
 library(vcfR)
 library(lme4)
+library(CMplot)
 ```
 
 
@@ -392,7 +393,7 @@ write.csv(lme4qtl.output, "RAnalysis/Output/Popgen/qtl/All_QTL_raw.csv")
   - then run! 
   
   
-```{r lme4qtl run with nerged alt SNPs}
+```{r lme4qtl run with merged alt SNPs}
 
 # read in 
 lme4qtl.output <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_raw.csv")
@@ -520,11 +521,17 @@ write.csv(lme4qtl.mergedalleles.output, "RAnalysis/Output/Popgen/qtl/All_QTL_raw
 
   - in short, we ran a ton of tests. One method to correct is to order from low to high pvalue and conduct a stepwise Bonferroni
   
-```{r Edit  raw output QTL: Correct for multiple tests}
+```{r filter raw output QTL: Correct for multiple tests}
 
-raw_qtl.df <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_raw.csv", sep = ",", head = T) %>% 
-                            select(!X)
-raw_qtl_merged_altalleles.df <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_raw_merged_altalleles.csv", sep = ",", head = T) %>% select(!X)
+raw_qtl.df                   <- read.csv("RAnalysis/Output/Popgen/qtl/All/results/All_QTL_raw.csv", sep = ",", head = T) %>% 
+                                        select(!X)
+raw_qtl_merged_altalleles.df <- read.csv("RAnalysis/Output/Popgen/qtl/All/results/All_QTL_raw_merged_altalleles.csv", sep = ",", head = T) %>%
+                                        select(!X)
+
+length(
+  unique(
+    (rbind(raw_qtl.df,raw_qtl_merged_altalleles.df))$locus
+    ))# 2657 - this is the total number of loci from QTL for F1-F3 low moderate and high
 
 raw_qtl_master.df <- rbind(raw_qtl.df, raw_qtl_merged_altalleles.df) %>% 
                              distinct() %>%  # omit duplicates, oopsy, added to cumulative file twice..
@@ -559,10 +566,10 @@ length(unique(raw_qtl_master.df$locus)) # 2657
 
 # why do we need to do this? 
 # for stepwise bonferronni we need an adjusted denominator # for the cumulative tests run
-# whereas the normal bonferroni correct by dividing pvalues by the sum of all tests (1,768 in our case!)
+# whereas the normal bonferroni correct by dividing pvalues by the sum of all tests (2,657 in our case!)
 # this will simply make every model non significant. A less conservative method to truncate multiple tests for those 
 # most significant is to list the models from low to high and divide p values according to this new order of tests
-# example: model with the lowest pvales are adjust y dividing by 1, the next lowest by 2 and so on...
+# example: model with the lowest pvales are adjust p dividing by 1, the next lowest by 2 and so on...
 
 
 # Step 1: Sort values within each category (pvalues low to high in each locus)
@@ -572,7 +579,7 @@ loci_sorted <- raw_qtl_master.df[order(raw_qtl_master.df$locus, raw_qtl_master.d
 loci_min <- aggregate(pvalue ~ locus, data = raw_qtl_master.df, FUN = min)
 
 # Step 3: Order categories based on their minimum values (order the locus from low to high, this is the order for our final df)
-# make adataframe adding the column 'rank' from 1 to length loci_order and rename loci_order to locus to merge in the next step
+# make a dataframe adding the column 'rank' from 1 to length loci_order and rename loci_order to locus to merge in the next step
 loci_order    <- loci_min$locus[order(loci_min$pvalue)]
 loci_order.df <- as.data.frame(loci_order) %>% mutate(rank = row_number()) %>% rename(locus = loci_order)
 # Step 4: Reorder the dataframe based on the category order (using the order above, reorder the sorted dataframe)
@@ -594,19 +601,26 @@ Bonferroni_qtl.df <- raw_qtl.df.sorted %>%
                                    # boolean for significant cases
                                    sig_boolean = case_when(pvalue < adj_bonferroni ~ 'TRUE', TRUE ~ 'FALSE')
                                    ) %>% 
-                            select(chromosome, chrom_num, position, locus, effect, df, Fvalue, pvalue,rank, adj_bonferroni, sig_boolean)
+                            select(chromosome, chrom_num, position, locus, effect, 
+                                   df, Fvalue, pvalue,rank, adj_bonferroni, sig_boolean)
                                    
 
 
 # save output 
-write.csv(Bonferroni_qtl.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni.csv")
+write.csv(Bonferroni_qtl.df, "RAnalysis/Output/Popgen/qtl/All_results/All_QTL_bonferroni.csv")
 
 ```
 
 
-```{r}
-# laod bonferroni adjusted lme4qtl output
-Bonferroni_qtl.df     <- read.csv("RAnalysis/Output/Popgen/qtl/All/All_QTL_bonferroni.csv", sep = ",", head = T) %>% select(!X)
+```{r parse sig effects and output}
+# load bonferroni adjusted lme4qtl output
+Bonferroni_qtl.df     <- read.csv("RAnalysis/Output/Popgen/qtl/All/results/All_QTL_bonferroni.csv", sep = ",", head = T) %>% select(!X)
+
+length(
+  unique(
+    (Bonferroni_qtl.df)$locus
+    ))# 2657 - this is the total number of loci from QTL for F1-F3 low moderate and high
+
 
 # truncate the data to only significant effects
 significant_loci.df   <- Bonferroni_qtl.df %>% dplyr::filter(sig_boolean %in% 'TRUE')
@@ -620,80 +634,56 @@ significant_loci.df   <- Bonferroni_qtl.df %>% dplyr::filter(sig_boolean %in% 'T
 
 
 # (1) Complex: generation x treatment interactions
-loci_complex.df    <- significant_loci.df %>% dplyr::filter(effect %in% 'generation * treatment')
-nrow(loci_complex.df) # 13 (7 wihtout merging alt alleles in the second run)
-
-
+loci_interaction.df    <- significant_loci.df %>% dplyr::filter(effect %in% 'generation * treatment')
+nrow(loci_interaction.df) # 13 (7 without merging alt alleles in the second run)
 
 # (2) Captivity: only a generation effect
 # first lest get the loci names for treament effects as well
 # treatment main effect
 loci_treatment.df  <- significant_loci.df %>% dplyr::filter(effect %in% 'treatment')
+nrow(loci_treatment.df) # 23
+
 # generation main effect
 loci_generation.df  <- significant_loci.df %>% dplyr::filter(effect %in% 'generation')
+nrow(loci_generation.df)
 
 # now we can truncate for both the interaction and treamtent effects 
-loci_captivity.df  <- significant_loci.df %>% filter(!(locus %in% loci_complex.df$locus | # gen * treatment, remove all loci
-                                                          locus %in% loci_treatment.df$locus)) # treament, remove all loci
-nrow(loci_captivity.df) # 47 (31 wihtout merging alt alleles in the second run)
+loci_generation_only.df  <- significant_loci.df %>% filter(!(locus %in% loci_interaction.df$locus | # gen * treatment, remove all loci
+                                                          locus %in% loci_treatment.df$locus)) # treatment, remove all loci
+nrow(loci_generation_only.df) # 47 (31 without merging alt alleles in the second run)
 
 
 
-# (3) Bottleneck effect: treatment only suggest that the inital F1 exposure truncated the population inthese inheritable loci
-loci_bottleneck.df <- significant_loci.df %>% filter(!(locus %in% loci_complex.df$locus | # gen * treatment, remove all loci
-                                                          locus %in% loci_generation.df$locus)) # gen only, remove all loci
-nrow(loci_bottleneck.df)
+# (3) Selection : treatment only suggests selective mortality in the F1 had inhertiable effect across generational timescales
+loci_treatment_only.df <- significant_loci.df %>% filter(!(locus %in% loci_interaction.df$locus | # gen * treatment, remove all loci
+                                                          locus %in% loci_generation_only.df$locus)) # gen only, remove all loci
+nrow(loci_treatment_only.df)
 # 22 (16 wihtout merging alt alleles in the second run)
 
 # save output 
-write.csv(loci_complex.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni_genXtreatment.csv")
-write.csv(loci_captivity.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni_gen_only.csv")
-write.csv(loci_bottleneck.df, "RAnalysis/Output/Popgen/qtl/All_QTL_bonferroni_treatment_only.csv")
+write.csv(loci_interaction.df, "RAnalysis/Output/Popgen/qtl/All/results/All_QTL_bonferroni_genXtreatment.csv")
+write.csv(loci_generation_only.df, "RAnalysis/Output/Popgen/qtl/All/results/All_QTL_bonferroni_gen_only.csv")
+write.csv(loci_treatment.df, "RAnalysis/Output/Popgen/qtl/All/results/All_QTL_bonferroni_treatment_only.csv")
 
 ```
 
+## Circular manhattan plot 
 
 
-```{r manhattan plot}
-# Load libraries 
-
-install.packages("CMplot")
-library("CMplot")
+* load Bonferroni_qtl.df - this contains the the model results with boolean column (T / F) for bonferroni corrected effects
 
 
+**gff**
 
-# example f the cirvular manhattan plot 
+- read reference gene function file (gff), rename chromosome accession ids to match
+- receive the putative protein name for each fo the significant loci from lme4qtl 
 
-data(pig60K)   #calculated p-values by MLM
-data(cattle50K)   #calculated SNP effects by rrblup
-head(pig60K)
+```{r read reference gff and assebmle crosomse and exon region files}
 
-CMplot(pig60K,
-       type="p",
-       plot.type="c",
-       r=0.4,
-       col=c("grey30","grey60"),
-       chr.labels=paste("Chr",c(1:18,"X","Y"),sep=""),
-       threshold=c(1e-6,1e-4),
-       cir.chr.h=1.5,
-       amplify=TRUE,
-       threshold.lty=c(1,2),
-       threshold.col=c("red","blue"),
-       signal.line=1,
-       signal.col=c("red","green"),
-       chr.den.col=c("darkgreen","yellow","red"),
-       bin.size=1e6,
-       outward=FALSE,
-       file="jpg",
-       file.name=NULL,
-       dpi=300,
-       file.output=TRUE,
-       verbose=TRUE,
-       width=10,
-       height=10)
+# first read the reference gff
+# Why?  objetive here to call the 'region' of start and end for chromosome size
+# the chrosome size is needed to create a cumulative base position column for plotting the circular manhattan plot 
 
-# rad the reference data, objetive here to call the 'rgion' of start and end for chromosome size
-# gff <- read.table("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff", sep="\t", quote="")
 reference.df <- ape::read.gff("C:/Users/samjg/Documents/Bioinformatics/refs/Airradians/GCF_041381155.1_genomic.gff") %>% 
             dplyr::filter(type %in% c('region','mRNA')) %>%  # get the region of the chromosome contains protein name, contains all exons
             dplyr::filter(!grepl("NW_",seqid)) %>% 
@@ -736,40 +726,54 @@ reference.df <- ape::read.gff("C:/Users/samjg/Documents/Bioinformatics/refs/Airr
           dplyr::select(type, chromosome, chrom_num, start, end, transcript_id, protein_id)
 
 
-# rchromosome regions only
+
+# filter fir just regions signifiying the start and stop of the chromosomes
 chromosome_regions.df <- reference.df %>% 
                               dplyr::filter(type %in% 'region') %>% 
-                              select(!c(type,transcript_id, protein_id))
-for (i in 2:nrow(chromosome_regions.df)) { # now cange the start point to be +1bp of the previous chromosome end point
+                              select(!c(type,transcript_id, protein_id)) %>% 
+                              dplyr::rename(Chromosome = chrom_num)
+
+
+# now adjust so that the start of +1 bp of the previous chromosome
+for (i in 2:nrow(chromosome_regions.df)) { # now change the start point to be +1bp of the previous chromosome end point
   chromosome_regions.df$start[i] = chromosome_regions.df$end[(i-1)] + 1
 }
+# DONE! (with the chrosome length and basepair data)
+
+# exon regions - adjust start and end of the regions to the cumulative base pairs!
+exon.df <- reference.df %>%  
+                dplyr::filter(type %in% 'mRNA') %>% 
+                dplyr::select(chrom_num, start, end, transcript_id, protein_id) %>% 
+                dplyr::rename(Chromosome = chrom_num)
+
+exon_cumBP_adj.df <- merge(exon.df, 
+                          (chromosome_regions.df %>% 
+                                              dplyr::select(Chromosome, start) %>% 
+                                              dplyr::rename(Chromosome_start = start) %>% 
+                                              dplyr::mutate(Chromosome_start = case_when(Chromosome == 1 ~ 0, 
+                                                                                         .default = Chromosome_start))),
+                          by = 'Chromosome') %>% # merge exon with chrosoome regions, truncated to just the start BP
+                      mutate(start = start + Chromosome_start, # adjust the start and end of exons to the cumulative start and end
+                             end = end + Chromosome_start) # why? we need this for the ciruclar manhattan! 
 
 
-# edi the bonferroni correct qtl results to merge with chromosome_regions.df
-Bonferroni_qtl.df  <- Bonferroni_qtl.df %>% mutate(chromosome = paste0(chromosome,".1"))
+```
 
-# merge with chromosome_regions.df
-Bonferroni_qtl_manhattan.df <- merge(chromosome_regions.df, 
-                                     Bonferroni_qtl.df, 
-                                     by = c("chromosome", "chrom_num")) %>% 
-                           mutate(locus = paste0(chromosome,'_',position),
-                           position = as.numeric(position) + as.numeric(start),
-                           ) %>% 
-                          rename(SNP = locus,
-                                 Chromosome = chrom_num,
-                                 Position = position) %>% 
-                          select(SNP, Chromosome, Position, effect, pvalue) %>% 
-                          tidyr::pivot_wider(id_cols = c("SNP","Chromosome","Position"),
-                                             names_from = "effect",
-                                             values_from = "pvalue") %>% 
-                          select(SNP, Chromosome, Position, treatment)
 
-CMplot(Bonferroni_qtl_manhattan.df,
+```{r test CM plot with mock data to see}
+
+# Test circular Manhattan plot with mock data  :::::::::::::::::::::::::::::::::
+
+# example f the cirvular manhattan plot using 'CMplot" package
+data(pig60K)   #calculated p-values by MLM
+data(cattle50K)   #calculated SNP effects by rrblup
+
+CMplot(pig60K,
        type="p",
        plot.type="c",
        r=0.4,
        col=c("grey30","grey60"),
-       chr.labels=paste("Chr",c(1:16),sep=""),
+       chr.labels=paste("Chr",c(1:18,"X","Y"),sep=""),
        threshold=c(1e-6,1e-4),
        cir.chr.h=1.5,
        amplify=TRUE,
@@ -778,8 +782,7 @@ CMplot(Bonferroni_qtl_manhattan.df,
        signal.line=1,
        signal.col=c("red","green"),
        chr.den.col=c("darkgreen","yellow","red"),
-       #bin.size=1e6, # count of SNPs ber 1 Mb sliding window
-       bin.size=1e8, # count of SNPs ber 10 Mb sliding window
+       bin.size=1e6,
        outward=FALSE,
        file="jpg",
        file.name=NULL,
@@ -789,38 +792,212 @@ CMplot(Bonferroni_qtl_manhattan.df,
        width=10,
        height=10)
 
-CMplot(Bonferroni_qtl_manhattan.df,type="p",plot.type="c",LOG10=TRUE,outward=TRUE,col=matrix(c("#4DAF4A",NA,NA,"dodgerblue4",
-         "deepskyblue",NA,"dodgerblue1", "olivedrab3", "darkgoldenrod1"), nrow=3, byrow=TRUE),
-         chr.labels=paste("Chr",c(1:16),sep=""),threshold=NULL,r=1.2,cir.chr.h=1.5,axis.cex=1,
-         cir.band=1,file="jpg", file.name=NULL,dpi=300,chr.den.col="black",file.output=TRUE,verbose=TRUE,
-         width=10,height=10)
+```
 
-loci <- F1F2F3_All.FSTMat %>% mutate(chromosome = gsub("_.*", "\\1", LocusName),
-                              position = gsub(".*_", "", LocusName)) %>% select(chromosome, 
-                                                                                           position)
 
-loci_master <- merge(loci, chromosome_regions.df) %>% 
-                    mutate(locus = paste0(chromosome,'_',position),
-                           position = as.numeric(position) + as.numeric(start),
+```{r run CMplot with QTL data}
+
+# Circular Manhattan plot with our QTL data :::::::::::::::::::::::::::::::::
+
+# load bonferroni adjusted lme4qtl output
+Bonferroni_qtl.df     <- read.csv("RAnalysis/Output/Popgen/qtl/All/results/All_QTL_bonferroni.csv", sep = ",", head = T) %>% select(!X)
+
+# edit to enable merging, needs ".1" at the end of chromsome ids to match
+Bonferroni_qtl.df  <- Bonferroni_qtl.df %>% mutate(chromosome = paste0(chromosome,".1"))
+
+# merge with chromosome_regions.df
+qtl_chromosome.df <- merge( (chromosome_regions.df %>% dplyr::rename(chrom_num = Chromosome)), 
+                                     Bonferroni_qtl.df, # merge the bonferrsoni results with this new chromosome_regions.df
+                                     by = c("chromosome", "chrom_num")) %>% 
+                           mutate(
+                             #locus = paste0(chromosome,'_',position),
+                             position = as.numeric(position) + as.numeric(start),
                            ) %>% 
-                    rename(SNP = locus,
-                           CHR = chrom_num,
-                           BP = position) %>% 
-                    select(SNP, CHR, BP)
+                          rename(SNP = locus,
+                                 Chromosome = chrom_num,
+                                 Position = position) %>% 
+                          select(SNP, Chromosome, Position, effect, pvalue) %>% 
+                          tidyr::pivot_wider(id_cols = c("SNP","Chromosome","Position"),
+                                             names_from = "effect",
+                                             values_from = "pvalue") %>% 
+                          select(SNP, Chromosome, Position, 
+                                 'generation * treatment',
+                                 generation, # inner ring
+                                 treatment) # outer ring)
+
+# HIGHLIGHT SIGNIFICANT LOCI  - (not needed if we mke separate circular manhattan plots!)
+# to have highlighted regions on the circular manhattan we need to have 
+# the TRUE and FALSE for whether the SNP has a significant effect, to do this we have a bit of a run around below 
+Bonferroni_TRUE  <- unique(Bonferroni_qtl.df %>%  
+                             dplyr::select(locus, sig_boolean) %>%  
+                             dplyr::rename(SNP = locus) %>% 
+                             dplyr::filter(sig_boolean %in% 'TRUE'))
+Bonferroni_FALSE <- unique(Bonferroni_qtl.df %>%  
+                             dplyr::select(locus, sig_boolean) %>%  
+                             dplyr::rename(SNP = locus) %>% 
+                             dplyr::filter(sig_boolean %in% 'FALSE'))
+qtl_boolean.df   <- rbind(Bonferroni_TRUE, 
+                          (Bonferroni_FALSE %>% filter(!SNP %in% Bonferroni_TRUE$SNP ))
+                          )
+nrow(qtl_boolean.df) # 2657 PERFECT!
+
+# now merge the qtl chromsome with qtl boolean to obtain all desired columns
+qtl_chromosome_boolean.df <- merge(qtl_chromosome.df, # merge the qtl chromosome, wider with cumulative position of SNP and each main effect
+                                   qtl_boolean.df, # with wether that SNP has a significnat Bonferroni
+                                   by = "SNP")
+nrow(qtl_chromosome_boolean.df) # 2656 PERFECT! Note that this sig_boolean doesnt indiviate WHICH effect is sig, just that the snp has a sig effect
 
 
-out_trim.2 <- out_trim$results  %>% 
-                      rename(SNP = LocusName) %>%  
-                      select(SNP, FST, pvalues, qvalues, OutlierFlag)
-F1F2F3_All.fstMaster <- merge(loci_master, out_trim.2, by = "SNP")
-library(qqman)
-gwasResults
+# INTRON OR EXON LOCATION (valuable information to 'highlight' in the ciruclar manhattan plot!
+# add in "location" column indicating whether intron or exon location of the SNP 
+qtl_chromosome_annotated <- unique(
+                                  exon_cumBP_adj.df %>% 
+                                  left_join(qtl_chromosome_boolean.df, by = c("Chromosome")) %>% # not this adds all exons to each SNP, too much!
+                                  mutate(location = case_when((Position >= start & Position <= end) ~ 'exon',
+                                                               .default = 'intron'),
+                                         protein_id = case_when(location %in% 'exon' ~ protein_id,
+                                                                location %in% 'intron' ~ NA)) %>% # determine whether in or outside of coding region
+                                  mutate(protein_id = gsub(' transcript variant.*', '',protein_id)) %>%  # omits the transcript varaint... to get unique ids per locus
+                                  select(SNP, Chromosome, Position, 
+                                         'generation * treatment', generation, treatment, 
+                                         location, protein_id, sig_boolean)
+                                  ) # up to this point its an all in all, millions of rows, now take the unique, this should cndense down to 1 prptein ID or NA for location
 
-# Make the Manhattan plot on the gwasResults dataset
-manhattan( (F1F2F3_All.fstMaster %>% na.omit()), chr="CHR", bp="BP", snp="SNP", p="pvalues")
+# SANITY CHECK, ARE ALL SNPS REPRESENTED NOW?
+# sanity chec, must be true!
+nrow(qtl_chromosome_annotated) == nrow(qtl_chromosome.df) # FALSE
+# each exon has a duplicate as 'intron' because the left_join gathered all ids and positiosn so each exon hit has a intron hit as well.. we dont want this
+# below we call the exons and intron, then remove all exon SNP ids from the intron
+qtl_chromosome_annotated_exon   <- qtl_chromosome_annotated %>% 
+                                          filter(location %in% "exon")
+qtl_chromosome_annotated_intron <- qtl_chromosome_annotated %>% 
+                                          filter(location %in% 'intron') %>% 
+                                          filter(!SNP %in% qtl_chromosome_annotated_exon$SNP)
+# now rbind them
+qtl_chromosome_annotated.df     <- rbind(qtl_chromosome_annotated_exon, qtl_chromosome_annotated_intron)
+# this should now be TRUE!
+nrow(qtl_chromosome_annotated.df) == nrow(qtl_chromosome.df) # TRUE!
+View(qtl_chromosome_annotated.df)
 
-# what are the outliers? 
-View(F1F2F3_All.fstMaster)
-View( out_trim$results)
-# CM084278.1_20591212 and CM084278.1_24948349
+
+# ASSEMBLE MANHATTAN DATASETS 
+qtl_manhattan <- qtl_chromosome_annotated.df %>% 
+                                select(SNP, Chromosome, Position, 
+                                       'generation * treatment', 
+                                       generation, 
+                                       treatment)
+
+qtl_manhattan_treatment <- qtl_chromosome_annotated.df %>% 
+                                select(SNP, Chromosome, Position, 
+                                       treatment)
+
+qtl_manhattan_generation <- qtl_chromosome_annotated.df %>% 
+                                select(SNP, Chromosome, Position, 
+                                       generation)
+
+qtl_manhattan_treatmentXgeneration <- qtl_chromosome_annotated.df %>% 
+                                          select(SNP, Chromosome, Position, 
+                                                 'generation * treatment')
+
+# higlighted SNPS as those in exons!
+
+highlight_exons <- (qtl_chromosome_annotated.df %>% 
+                                dplyr::filter(location %in% 'exon' & sig_boolean %in% 'TRUE'))$SNP
+
+
+# lets plot it
+# imporatnt! check the output file for each fixed efect and create the threshold required to show sig loci
+# treatment, minimum is 0.00051
+CMplot(qtl_manhattan_treatment,
+       type="p",
+       plot.type="c",
+       r=0.4,
+       col=c("grey30","grey60"),# colorblindness freindly 
+       chr.labels=paste("Chr",c(1:16),sep=""),
+       # threshold=c(1e-6,1e-4),
+       threshold=c(0.00051,1e-6), # 0.001
+       cir.chr.h=1.5,
+       amplify=TRUE,
+       threshold.lty=c(1,2),
+       threshold.col=c("#999999","#999999"),
+       signal.line=1,
+       signal.col=c("#D55E00","#E69F00"),# colorblindness freindly 
+       chr.den.col=c("#F0E442", "#009E73", "#0072B2"), # colorblindness freindly 
+       bin.size=1e6, # count of SNPs ber 1 Mb sliding window
+       #bin.size=1e8, # count of SNPs ber 10 Mb sliding window
+       outward=FALSE,
+       file="pdf",
+       highlight = highlight_exons,
+       highlight.cex = 1.5,
+       highlight.col = "black",
+       file.name="All_Manhattan_Treatment",
+       dpi=300,
+       file.output=TRUE,
+       verbose=TRUE,
+       width=10,
+       height=10)
+
+
+# treatment, minimum is 0.00061
+CMplot(qtl_manhattan_generation,
+       type="p",
+       plot.type="c",
+       r=0.4,
+       col=c("grey30","grey60"),# colorblindness freindly 
+       chr.labels=paste("Chr",c(1:16),sep=""),
+       # threshold=c(1e-6,1e-4),
+       threshold=c(0.00061,1e-6), # 0.001
+       cir.chr.h=1.5,
+       amplify=TRUE,
+       threshold.lty=c(1,2),
+       threshold.col=c("#999999","#999999"),
+       signal.line=1,
+       signal.col=c("#D55E00","#E69F00"),# colorblindness freindly 
+       chr.den.col=c("#F0E442", "#009E73", "#0072B2"), # colorblindness freindly 
+       bin.size=1e6, # count of SNPs ber 1 Mb sliding window
+       #bin.size=1e8, # count of SNPs ber 10 Mb sliding window
+       outward=FALSE,
+       file="pdf",
+       highlight = highlight_exons,
+       highlight.cex = 1.5,
+       highlight.col = "black",
+       file.name="All_Manhattan_Generation",
+       dpi=300,
+       file.output=TRUE,
+       verbose=TRUE,
+       width=10,
+       height=10)
+
+# treatment, minimum is 0.00049
+CMplot(qtl_manhattan_treatmentXgeneration,
+       type="p",
+       plot.type="c",
+       r=0.4,
+       col=c("grey30","grey60"),# colorblindness freindly 
+       chr.labels=paste("Chr",c(1:16),sep=""),
+       # threshold=c(1e-6,1e-4),
+       threshold=c(0.00049,1e-6), # 0.001
+       cir.chr.h=1.5,
+       amplify=TRUE,
+       threshold.lty=c(1,2),
+       threshold.col=c("#999999","#999999"),
+       signal.line=1,
+       signal.col=c("#D55E00","#E69F00"),# colorblindness freindly 
+       chr.den.col=c("#F0E442", "#009E73", "#0072B2"), # colorblindness freindly 
+       bin.size=1e6, # count of SNPs ber 1 Mb sliding window
+       #bin.size=1e8, # count of SNPs ber 10 Mb sliding window
+       outward=FALSE,
+       file="pdf",
+       highlight = highlight_exons,
+       highlight.cex = 1.5,
+       highlight.col = "black",
+       file.name="All_Manhattan_TreatmentXGeneration",
+       dpi=300,
+       file.output=TRUE,
+       verbose=TRUE,
+       width=10,
+       height=10)
+
+?CMplot
+
 ```
