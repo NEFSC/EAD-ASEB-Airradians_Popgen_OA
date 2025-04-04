@@ -1,0 +1,412 @@
+---
+title: "waples_test"
+author: "Samuel Gurr"
+date: "2025-04-03"
+output: html_document
+---
+
+## Objective: 
+
+* at this point in our pipeline (pedigree -< kinship -> binary QTL -> adj p -> annotate sig loci -> plot) we have reduced SNPs down to those putatively selected in our treatment groups. Now we want to know, how does the minor allele frequency behave across time? To this end, we 
+need to convert the vcf file data to MAF and we can do this in R with the package 'gwscaR'. With MAF by loci, we can integrate the strata
+populations (F1 juv, F1 brood, F2 juv.. etc.) to plot all loci and *importantly* truncate loci to those affected by treatment (via lme4QTL)
+to see how the MAF behaves across lifespan and generational timescales. 
+
+### set working directory
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# SET WORKING DIRECTORY 
+knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+#knitr::opts_knit$set(root.dir = "C:/Users/samuel.gurr/Documents/Github_repositories/EAD-ASEB-Airradians_Popgen_OA/") # Sam's
+```
+
+
+### load libraries
+
+```{r, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(tidyverse)
+library(vcfR)
+library(gwscaR) #remotes::install_github("spflanagan/gwscaR")
+```
+
+
+### Convert vcf to MAF 
+
+* Objective: 
+
+```{r load master vcf file}
+
+# load master vcf
+All.vcf <- vcfR::read.vcfR(here::here(getwd(),
+                            "RAnalysis", 
+                            "Data", 
+                            "Popgen", 
+                            "03_prune", 
+                            "out.7.phased.vcf.gz"), verbose = FALSE)
+
+# filter out F0, retain all other individuals!
+F1F2F3_All.vcf <- All.vcf[,c(1,27:392)]  # QTL run with all progeny
+
+# filter out F0 and High treatment, reatain low v Mod # QTL run with just Low and Moderate progeny
+F1F2F3_LowvMod.vcf <- All.vcf[,c(1,27:139, #F1
+                              153:177, 198:250, # F2
+                              295:392)] # F3
+
+```
+
+
+```{r custom code of vcf filenames to aquire pop metadata}
+
+# list ids for all individuals int he vcf file
+All.ListIDs  <- colnames(All.vcf@gt[,2:length(colnames(All.vcf@gt))])
+
+# master metadata
+All.metadata <- as.data.frame(matrix(ncol = 1,
+                                     nrow = length(All.ListIDs))) %>% 
+                          mutate(id = All.ListIDs,
+                                 type = dplyr::case_when(grepl("-B", id) ~ "broodstock", TRUE ~ 'juvenile'),
+                                 gen = dplyr::case_when(grepl("F0", id) ~ "F0",
+                                                             grepl("F1", id) ~ "F1",
+                                                             grepl("F2", id) ~ "F2",
+                                                             grepl("F3", id) ~ "F3",
+                                                             TRUE ~ "F1"),
+                                 treatment = dplyr::case_when(
+                                        grepl("F0", id) ~ "none",
+                                        grepl("pH7\\.",id) ~ "High",
+                                        grepl(c("pH75\\.|.201.|.203.|.204.|.251.|.253.|.254.|.301.|.303.|.304.|.351.|.352.|.353.|.354."), id) ~
+                                        "Moderate",
+                                        grepl(c("pH8|.101.|.103.|.104.|.153.|.154.|.155.|.3.|.4.|.5."), id) ~ 
+                                        "Low")) %>% 
+                                dplyr::mutate(gen_treatment = 
+                                                dplyr::case_when(gen == "F0" ~ "F0",
+                                                                 gen %in% c("F1","F2","F3") ~ paste0(gen,'_',treatment))) %>% 
+                                select(-V1) 
+
+```
+
+
+
+```{r subset metadata by target vcf files}
+
+All.metadata # here for the All.vcf
+
+F1F2F3_All.metadata     <- All.metadata %>% dplyr::filter(id %in%
+                                                            colnames(F1F2F3_All.vcf@gt[,2:length(colnames(F1F2F3_All.vcf@gt))]))
+
+F1F2F3_LowvMod.metadata  <- All.metadata %>% dplyr::filter(id %in%
+                                                             colnames(F1F2F3_LowvMod.vcf@gt[,2:length(colnames(F1F2F3_LowvMod.vcf@gt))]))
+```
+
+
+### Calculate Allele Frequencies by Population
+
+
+```{r extract genotype information}
+
+All.gt            <- extract.gt(All.vcf, element = "GT")
+
+
+F1F2F3_All.gt     <- extract.gt(F1F2F3_All.vcf, element = "GT")
+
+
+F1F2F3_LowvMod.gt <- extract.gt(F1F2F3_LowvMod.vcf, element = "GT")
+
+```
+
+```{r define populations}
+
+All.strata            <- All.metadata %>% select(gen_treatment,id) # as F0 F1_Low, F1_Moderate, and so on
+
+F1F2F3_All.strata     <- F1F2F3_All.metadata %>% select(gen_treatment,id) # as F0 F1_Low, F1_Moderate, and so on
+
+F1F2F3_LowvMod.strata  <- F1F2F3_LowvMod.metadata %>% select(gen_treatment,id) # as F0 F1_Low, F1_Moderate, and so on
+
+```
+
+```{r function to compute allele frequencies}
+
+calculate_af <- function(gt.matrix, ids) {
+                        pop_gt    <- gt.matrix[, ids] # subset for each strate group
+                        alt_count <- apply(pop_gt, 1, function(x)  {
+                                      alt_count <- sum(as.numeric(x != "0|0"))
+                                      })
+                        ref_count <- apply(pop_gt, 1, function(x)  {
+                                      sum(as.numeric(x == "0|0"))
+                                      })
+                        afs        <- cbind(data.frame(alt_count), data.frame(ref_count))
+                        afs$locus  <- rownames(pop_gt)
+                        afs$total_alleles <- afs$ref_count + afs$alt_count
+                        afs$af_ref <- afs$ref_count / afs$total_alleles
+                        afs$af_alt <- afs$alt_count / afs$total_alleles
+                        return(c(afs))
+}
+
+
+
+```
+
+
+
+```{r compute allele frequencies for each pop}
+# Loop through populations iwth lapplay outputing new subset
+
+
+All.afs <- lapply(unique(All.strata$gen_treatment), function(pop) {
+  calculate_af(All.gt, All.strata)
+})
+View(All.afs)
+
+
+
+
+
+F1F2F3_All.loop <- data.frame(unique(F1F2F3_All.strata))
+F1F2F3_All.afs  <- data.frame()
+for (i in 1:nrow(F1F2F3_All.loop)) {
+  
+  pop            = F1F2F3_All.loop$gen_treatment[i]
+  ids            = (F1F2F3_All.strata %>% filter(gen_treatment %in% pop))$id 
+  loop.afs       = calculate_af(F1F2F3_All.gt, ids)
+  F1F2F3_All.afs = rbind(F1F2F3_All.afs, 
+                          (data.frame(loop.afs) %>% mutate(Pop = pop))
+                          )
+
+}
+
+
+
+
+F1F2F3_LowvMod.loop <- data.frame(unique(F1F2F3_LowvMod.strata))
+F1F2F3_LowvMod.afs  <- data.frame()
+for (i in 1:nrow(F1F2F3_LowvMod.loop)) {
+  
+  pop            = F1F2F3_LowvMod.loop$gen_treatment[i]
+  ids            = (F1F2F3_LowvMod.strata %>% filter(gen_treatment %in% pop))$id 
+  loop.afs       = calculate_af(F1F2F3_LowvMod.gt, ids)
+  F1F2F3_LowvMod.afs = rbind(F1F2F3_LowvMod.afs, 
+                          (data.frame(loop.afs) %>% mutate(Pop = pop))
+                          )
+
+}
+
+```
+
+
+# Load in the significant loci from QTL
+
+* load in the significant SNPs from lme4qtl with stepwise bonferroni correctio, review the qtl script for details..
+
+```{r load significant qtl loci}
+
+
+# read lme4qtl results
+F1F2F3_LowvMod.qtl_interaction <- read.csv("RAnalysis/Output/Popgen/qtl/LowvMod/results/LowvMod_QTL_bonferroni_genXtreatment.csv", sep = ',') %>%
+                                          select (-X)
+F1F2F3_LowvMod.qtl_generation  <- read.csv("RAnalysis/Output/Popgen/qtl/LowvMod/results/LowvMod_QTL_bonferroni_gen_only.csv", sep = ',') %>%  
+                                          select (-X)
+F1F2F3_LowvMod.qtl_treatment   <- read.csv("RAnalysis/Output/Popgen/qtl/LowvMod/results/LowvMod_QTL_bonferroni_treatment_only.csv", sep = ',') %>%
+                                          select (-X)
+
+
+# read lme4qtl results
+F1F2F3_All.qtl_interaction <- read.csv("RAnalysis/Output/Popgen/qtl/All/results/All_QTL_bonferroni_genXtreatment.csv", sep = ',') %>%  
+                                          select (-X)
+F1F2F3_All.qtl_generation  <- read.csv("RAnalysis/Output/Popgen/qtl/All/results/All_QTL_bonferroni_gen_only.csv", sep = ',') %>%  
+                                          select (-X)
+F1F2F3_All.qtl_treatment   <- read.csv("RAnalysis/Output/Popgen/qtl/All/results/All_QTL_bonferroni_treatment_only.csv", sep = ',') %>%  
+                                          select (-X)
+
+```
+
+### Visualize all and target loci 
+
+  * figure for all SNPs from .afs file 
+  
+  * truncate .afs for target loci from qtl, visualize alongside the figure in bullet #1
+
+```{r F1F2F3_LowvMod treatment effect}
+
+# allelle freq master file == F1F2F3_LowvMod.afs_master
+# qtl targe loci           == F1F2F3_LowvMod.qtl_treatment
+
+F1F2F3_LowvMod.afs_qtl_treatment <- F1F2F3_LowvMod.afs %>% 
+                                              dplyr::filter(locus %in% 
+                                                              gsub("^(CM\\d+)_1_(\\d+)\\.(\\d+)$", "\\1.\\3_\\2", 
+                                                                   F1F2F3_LowvMod.qtl_treatment$locus)) %>% 
+                                    tidyr::pivot_longer(cols = c(af_ref, af_alt), 
+                                                        names_to = "AlleleType",
+                                                        values_to = "Frequency") %>% 
+                                    dplyr::mutate(Treatment = gsub('.*_', '',Pop),
+                                                  Generation = gsub('_.*', '',Pop))
+# sanity check
+length(unique(F1F2F3_LowvMod.afs_qtl_treatment$locus)) == nrow(F1F2F3_LowvMod.qtl_treatment)
+
+# calculate the meanand standard error
+F1F2F3_LowvMod.afs_qtl_treatmentMEANSE <-  Rmisc::summarySE(F1F2F3_LowvMod.afs_qtl_treatment, 
+                                                 measurevar = ('Frequency'), 
+                                                 groupvars = c('Pop','Generation','Treatment','AlleleType'))
+
+# plot 
+scatter <- ggplot(data = (F1F2F3_LowvMod.afs_qtl_treatment %>% 
+                            # filter(locus %in% 'CM084266.1_65580309') %>% 
+                            filter(AlleleType %in% 'af_alt')), 
+       aes(y = as.numeric(Frequency), x = Generation, group = locus)) +
+  geom_line(aes(color = Treatment)) +
+  geom_point(aes(color = Treatment,alpha = 0.5))+
+  scale_color_manual(values = c("#009E73","#E69F00")) + 
+  ggtitle("Scatter MAF") +
+  facet_wrap(~Treatment) + 
+  theme_classic() +
+  theme(legend.position = "none") 
+scatter
+
+StackedBar <- ggplot(F1F2F3_LowvMod.afs_qtl_treatmentMEANSE, 
+                     aes(fill = forcats::fct_relevel(AlleleType, "af_ref", "af_alt"), 
+                         y = as.numeric(Frequency), 
+                         x = Generation)) +
+  geom_bar(position = "stack", stat = "identity", alpha = 0.5) +
+  scale_fill_manual(values = c("grey70", "grey20")) +
+  ggtitle("Stacked Bar MAF v Ref") +
+  facet_wrap(~Treatment) + 
+  theme_classic() +
+  theme(legend.position = "none") 
+
+ggpubr::ggarrange(scatter, StackedBar, nrow = 1)
+```
+
+
+
+```{r F1F2F3_All treatment effect}
+
+# allelle freq master file == F1F2F3_LowvMod.afs_master
+# qtl targe loci           == F1F2F3_LowvMod.qtl_treatment
+
+F1F2F3_All.afs_qtl_treatment <- F1F2F3_All.afs %>% 
+                                              dplyr::filter(locus %in% 
+                                                              gsub("^(CM\\d+)_1_(\\d+)\\.(\\d+)$", "\\1.\\3_\\2", 
+                                                                   F1F2F3_All.qtl_treatment$locus)) %>% 
+                                    tidyr::pivot_longer(cols = c(af_ref, af_alt), 
+                                                        names_to = "AlleleType",
+                                                        values_to = "Frequency") %>% 
+                                    dplyr::mutate(Treatment = gsub('.*_', '',Pop),
+                                                  Generation = gsub('_.*', '',Pop))
+# sanity check
+length(unique(F1F2F3_All.afs_qtl_treatment$locus)) == nrow(F1F2F3_All.qtl_treatment)
+
+# calculate the meanand standard error
+F1F2F3_All.afs_qtl_treatmentMEANSE <-  Rmisc::summarySE(F1F2F3_All.afs_qtl_treatment, 
+                                                 measurevar = ('Frequency'), 
+                                                 groupvars = c('Pop','Generation','Treatment','AlleleType'))
+
+
+# plot 
+
+scatter <- ggplot(data = (F1F2F3_All.afs_qtl_treatment %>% 
+                            # filter(locus %in% 'CM084264.1_64874049') %>% 
+                            filter(AlleleType %in% 'af_alt') %>% 
+                            mutate(Treatment = forcats::fct_relevel(Treatment, "Low", "Moderate", "High"))), 
+       aes(y = as.numeric(Frequency), x = Generation, group = locus)) +
+  geom_line(aes(color = Treatment)) +
+  geom_point(aes(color = Treatment,alpha = 0.5))+
+  scale_color_manual(values = c("#009E73","#E69F00", "#CC79A7")) + 
+  ggtitle("Scatter MAF") +
+  facet_wrap(~Treatment) + 
+  theme_classic() +
+  theme(legend.position = "none") 
+scatter
+
+StackedBar <- ggplot(data = (F1F2F3_All.afs_qtl_treatmentMEANSE %>% 
+                              mutate(Treatment = forcats::fct_relevel(Treatment, "Low", "Moderate", "High"))), 
+                     aes(fill = forcats::fct_relevel(AlleleType, "af_ref", "af_alt"), 
+                         y = as.numeric(Frequency), 
+                         x = Generation)) +
+  geom_bar(position = "stack", stat = "identity", alpha = 0.5) +
+  scale_fill_manual(values = c("grey70", "grey20")) +
+  ggtitle("Stacked Bar MAF v Ref") +
+  facet_wrap(~Treatment) + 
+  theme_classic() +
+  theme(legend.position = "none") 
+
+ggpubr::ggarrange(scatter, StackedBar, nrow = 1)
+ 
+ 
+```
+
+
+```{r waples test}
+
+# Function to perform Waples' test for allele frequency changes
+waples_test <- function(p0, pt, S0, St, t) {
+  F_observed <- (pt - p0)^2 / (p0 * (1 - p0))
+  F_corrected <- F_observed - (1/(2*S0) + 1/(2*St))
+  Ne_estimate <- t / (2 * F_corrected)  # Effective population size estimate[3]
+  
+  # Chi-squared test adjusted for drift
+  chi_stat <- sum((pt - p0)^2 / (p0 * (1 - p0) * (1/(2*S0) + 1/(2*St))))
+  p_value <- pchisq(chi_stat, df = length(p0) - 1, lower.tail = FALSE)
+  
+  return(list(Ne = Ne_estimate, chi_sq = chi_stat, p_value = p_value))
+}
+
+
+```
+
+
+```{r example usage}
+# Example usage:
+p0 <- c(0.8, 0.2)  # Initial allele frequencies (e.g., A1 and A2)
+pt <- c(0.75, 0.25)  # Frequencies after t generations
+S0 <- 100  # Initial sample size
+St <- 100  # Post-drift sample size
+t <- 5  # Generations between samples
+
+result <- waples_test(p0, pt, S0, St, t)
+print(result)
+```
+
+
+```{r}
+
+
+F1F2F3_All.afs_qtl_lociMEANSE <-  Rmisc::summarySE(F1F2F3_All.afs_qtl_treatment, 
+                                                 measurevar = ('Frequency'), 
+                                                 groupvars = c('Pop','Generation','Treatment','AlleleType', 'locus'))
+
+
+F1Mod_alt <- (F1F2F3_All.afs_qtl_lociMEANSE %>% filter(AlleleType %in% 'af_alt' & Pop %in% 'F1_Moderate'))$Frequency # 0.3604743
+F3Mod_alt <- (F1F2F3_All.afs_qtl_lociMEANSE %>% filter(AlleleType %in% 'af_alt' & Pop %in% 'F3_Moderate'))$Frequency # 0.4055013
+# Example usage:
+p0 <- F1Mod_alt  # Initial allele frequencies (e.g., A1 and A2)
+pt <- F3Mod_alt  # Frequencies after t generations
+S0 <- 55  # Initial sample size
+St <- 55  # Post-drift sample size
+t <- 2  # Generations between samples
+
+result <- waples_test(p0, pt, S0, St, t)
+print(result)
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+
+```
+
+
