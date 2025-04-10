@@ -154,10 +154,10 @@ calculate_af <- function(gt.matrix, ids) {
 # Loop through populations iwth lapplay outputing new subset
 
 
-All.afs <- lapply(unique(All.strata$gen_treatment), function(pop) {
-  calculate_af(All.gt, All.strata)
-})
-View(All.afs)
+# All.afs <- lapply(unique(All.strata$gen_treatment), function(pop) {
+#   calculate_af(All.gt, All.strata)
+# })
+# View(All.afs)
 
 
 
@@ -245,38 +245,137 @@ F1F2F3_LowvMod.afs_qtl_treatment <- F1F2F3_LowvMod.afs %>%
 length(unique(F1F2F3_LowvMod.afs_qtl_treatment$locus)) == nrow(F1F2F3_LowvMod.qtl_treatment)
 
 # calculate the meanand standard error
-F1F2F3_LowvMod.afs_qtl_treatmentMEANSE <-  Rmisc::summarySE(F1F2F3_LowvMod.afs_qtl_treatment, 
+F1F2F3_LowvMod.afs_qtl_treatmentMEANSE <- Rmisc::summarySE(F1F2F3_LowvMod.afs_qtl_treatment, 
                                                  measurevar = ('Frequency'), 
                                                  groupvars = c('Pop','Generation','Treatment','AlleleType'))
 
 # plot 
-scatter <- ggplot(data = (F1F2F3_LowvMod.afs_qtl_treatment %>% 
+
+Ref_allele_scatter <- ggplot(data = (F1F2F3_LowvMod.afs_qtl_treatment %>% 
+                            # filter(locus %in% 'CM084266.1_65580309') %>% 
+                            filter(AlleleType %in% 'af_ref')), 
+            aes(y = as.numeric(Frequency), x = Treatment, group = locus, color = Treatment)) +
+            geom_line(aes(group = locus), color = "grey80") +
+            # geom_line(aes(group = locus,color = 'grey40')) +
+            geom_point(aes(color = Treatment, alpha = 0.5))+
+            scale_color_manual(values = c("#009E73","#E69F00")) + 
+            ggtitle("Reference allele") +
+            facet_wrap(~Generation) + 
+            ylim(0,1) +
+            theme_classic() +
+            theme(legend.position = "none") 
+Ref_allele_scatter
+
+
+Alt_allele_scatter <- ggplot(data = (F1F2F3_LowvMod.afs_qtl_treatment %>% 
                             # filter(locus %in% 'CM084266.1_65580309') %>% 
                             filter(AlleleType %in% 'af_alt')), 
-       aes(y = as.numeric(Frequency), x = Generation, group = locus)) +
-  geom_line(aes(color = Treatment)) +
-  geom_point(aes(color = Treatment,alpha = 0.5))+
-  scale_color_manual(values = c("#009E73","#E69F00")) + 
-  ggtitle("Scatter MAF") +
-  facet_wrap(~Treatment) + 
-  theme_classic() +
-  theme(legend.position = "none") 
-scatter
+            aes(y = as.numeric(Frequency), x = Treatment, group = locus, color = Treatment)) +
+            geom_line(aes(group = locus), color = "grey80") +
+            # geom_line(aes(group = locus,color = 'grey40')) +
+            geom_point(aes(color = Treatment, alpha = 0.5))+
+            scale_color_manual(values = c("#009E73","#E69F00")) + 
+            ggtitle("Alt allele MAF") +
+            facet_wrap(~Generation) + 
+            ylim(0,1) +
+            theme_classic() +
+            theme(legend.position = "none") 
+Alt_allele_scatter
 
-StackedBar <- ggplot(F1F2F3_LowvMod.afs_qtl_treatmentMEANSE, 
-                     aes(fill = forcats::fct_relevel(AlleleType, "af_ref", "af_alt"), 
-                         y = as.numeric(Frequency), 
-                         x = Generation)) +
-  geom_bar(position = "stack", stat = "identity", alpha = 0.5) +
-  scale_fill_manual(values = c("grey70", "grey20")) +
-  ggtitle("Stacked Bar MAF v Ref") +
-  facet_wrap(~Treatment) + 
-  theme_classic() +
-  theme(legend.position = "none") 
+StackedBar <- ggplot(data = (F1F2F3_LowvMod.afs_qtl_treatmentMEANSE), 
+                      aes(fill = forcats::fct_relevel(AlleleType, "af_ref", "af_alt"), 
+                                             y = as.numeric(Frequency), 
+                                             x = Treatment)) +
+                      geom_bar(position = "stack", stat = "identity", alpha = 0.5) +
+                      scale_fill_manual(values = c("grey70", "grey20")) +
+                      scale_alpha_manual(values = c(0.1, 2)) +
+                      ggtitle("Stacked Bar MAF v Ref") +
+                      facet_wrap(~Generation) + 
+                      ylim(0,1) +
+                      theme_classic() +
+                      theme(legend.position = "none") 
+?scale_fill_manual
+ggpubr::ggarrange(Ref_allele_scatter,
+                  Alt_allele_scatter, 
+                  StackedBar, nrow = 3)
 
-ggpubr::ggarrange(scatter, StackedBar, nrow = 1)
+?scale_alpha_manual
 ```
 
+```{r F1F2F3_LowvMod generation effect}
+
+# allelle freq master file == F1F2F3_LowvMod.afs_master
+# qtl targe loci           == F1F2F3_LowvMod.qtl_treatment
+
+F1F2F3_LowvMod.afs_qtl_generation <- F1F2F3_LowvMod.afs %>% 
+                                              dplyr::filter(locus %in% 
+                                                              gsub("^(CM\\d+)_1_(\\d+)\\.(\\d+)$", "\\1.\\3_\\2", 
+                                                                   F1F2F3_LowvMod.qtl_generation$locus)) %>% 
+                                    tidyr::pivot_longer(cols = c(af_ref, af_alt), 
+                                                        names_to = "AlleleType",
+                                                        values_to = "Frequency") %>% 
+                                    dplyr::mutate(Treatment = gsub('.*_', '',Pop),
+                                                  Generation = gsub('_.*', '',Pop))
+# sanity check
+length(unique(F1F2F3_LowvMod.afs_qtl_generation$locus)) == nrow(F1F2F3_LowvMod.qtl_generation)
+
+# calculate the meanand standard error
+F1F2F3_LowvMod.afs_qtl_generationMEANSE <- Rmisc::summarySE(F1F2F3_LowvMod.afs_qtl_generation, 
+                                                 measurevar = ('Frequency'), 
+                                                 groupvars = c('Pop','Generation','Treatment','AlleleType'))
+
+# plot 
+
+Ref_allele_scatter <- ggplot(data = (F1F2F3_LowvMod.afs_qtl_generation %>% 
+                            # filter(locus %in% 'CM084266.1_65580309') %>% 
+                            filter(AlleleType %in% 'af_ref')), 
+            aes(y = as.numeric(Frequency), x = Treatment, group = locus, color = Treatment)) +
+            geom_line(aes(group = locus), color = "grey80") +
+            # geom_line(aes(group = locus,color = 'grey40')) +
+            geom_point(aes(color = Treatment, alpha = 0.5))+
+            scale_color_manual(values = c("#009E73","#E69F00")) + 
+            ggtitle("Reference allele") +
+            facet_wrap(~Generation) + 
+            ylim(0,1) +
+            theme_classic() +
+            theme(legend.position = "none") 
+Ref_allele_scatter
+
+
+Alt_allele_scatter <- ggplot(data = (F1F2F3_LowvMod.afs_qtl_generation %>% 
+                            # filter(locus %in% 'CM084266.1_65580309') %>% 
+                            filter(AlleleType %in% 'af_alt')), 
+            aes(y = as.numeric(Frequency), x = Generation, group = locus, color = Treatment)) +
+            geom_line(aes(group = locus), color = "grey80") +
+            # geom_line(aes(group = locus,color = 'grey40')) +
+            geom_point(aes(color = Treatment, alpha = 0.5))+
+            scale_color_manual(values = c("#009E73","#E69F00")) + 
+            ggtitle("Alt allele MAF") +
+            facet_wrap(~Treatment) + 
+            ylim(0,1) +
+            theme_classic() +
+            theme(legend.position = "none") 
+Alt_allele_scatter
+
+StackedBar <- ggplot(data = (F1F2F3_LowvMod.afs_qtl_generationMEANSE), 
+                      aes(fill = forcats::fct_relevel(AlleleType, "af_ref", "af_alt"), 
+                                             y = as.numeric(Frequency), 
+                                             x = Generation)) +
+                      geom_bar(position = "stack", stat = "identity", alpha = 0.5) +
+                      scale_fill_manual(values = c("grey70", "grey20")) +
+                      scale_alpha_manual(values = c(0.1, 2)) +
+                      ggtitle("Stacked Bar MAF v Ref") +
+                      facet_wrap(~Treatment) + 
+                      ylim(0,1) +
+                      theme_classic() +
+                      theme(legend.position = "none") 
+
+ggpubr::ggarrange(Ref_allele_scatter,
+                  Alt_allele_scatter, 
+                  StackedBar, nrow = 3)
+
+
+```
 
 
 ```{r F1F2F3_All treatment effect}
@@ -296,7 +395,29 @@ F1F2F3_All.afs_qtl_treatment <- F1F2F3_All.afs %>%
 # sanity check
 length(unique(F1F2F3_All.afs_qtl_treatment$locus)) == nrow(F1F2F3_All.qtl_treatment)
 
+
+
+
+
+
+# allelle freq master file == F1F2F3_LowvMod.afs_master
+# qtl targe loci           == F1F2F3_LowvMod.qtl_treatment
+
+F1F2F3_All.afs_qtl_treatment <- F1F2F3_All.afs %>% 
+                                              dplyr::filter(locus %in% 
+                                                              gsub("^(CM\\d+)_1_(\\d+)\\.(\\d+)$", "\\1.\\3_\\2", 
+                                                                   F1F2F3_All.qtl_treatment$locus)) %>% 
+                                    tidyr::pivot_longer(cols = c(af_ref, af_alt), 
+                                                        names_to = "AlleleType",
+                                                        values_to = "Frequency") %>% 
+                                    dplyr::mutate(Treatment = gsub('.*_', '',Pop),
+                                                  Generation = gsub('_.*', '',Pop))
+# sanity check
+length(unique(F1F2F3_All.afs_qtl_treatment$locus)) == nrow(F1F2F3_All.qtl_treatment)
+
 # calculate the meanand standard error
+F1F2F3_All.afs_qtl_treatment       <- F1F2F3_All.afs_qtl_treatment %>%  mutate(Treatment = as.factor(forcats::fct_relevel(Treatment, "Low", "Moderate", "High")))
+levels(F1F2F3_All.afs_qtl_treatment$Treatment)
 F1F2F3_All.afs_qtl_treatmentMEANSE <-  Rmisc::summarySE(F1F2F3_All.afs_qtl_treatment, 
                                                  measurevar = ('Frequency'), 
                                                  groupvars = c('Pop','Generation','Treatment','AlleleType'))
@@ -304,33 +425,55 @@ F1F2F3_All.afs_qtl_treatmentMEANSE <-  Rmisc::summarySE(F1F2F3_All.afs_qtl_treat
 
 # plot 
 
-scatter <- ggplot(data = (F1F2F3_All.afs_qtl_treatment %>% 
-                            # filter(locus %in% 'CM084264.1_64874049') %>% 
-                            filter(AlleleType %in% 'af_alt') %>% 
-                            mutate(Treatment = forcats::fct_relevel(Treatment, "Low", "Moderate", "High"))), 
-       aes(y = as.numeric(Frequency), x = Generation, group = locus)) +
-  geom_line(aes(color = Treatment)) +
-  geom_point(aes(color = Treatment,alpha = 0.5))+
-  scale_color_manual(values = c("#009E73","#E69F00", "#CC79A7")) + 
-  ggtitle("Scatter MAF") +
-  facet_wrap(~Treatment) + 
-  theme_classic() +
-  theme(legend.position = "none") 
-scatter
+Ref_allele_scatter <- ggplot(data = (F1F2F3_All.afs_qtl_treatment %>% 
+                            # filter(locus %in% 'CM084266.1_65580309') %>% 
+                            filter(AlleleType %in% 'af_ref')), 
+            aes(y = as.numeric(Frequency), x = Treatment, group = locus, color = Treatment)) +
+            geom_line(aes(group = locus), color = "grey80") +
+            # geom_line(aes(group = locus,color = 'grey40')) +
+            geom_point(aes(color = Treatment, alpha = 0.5))+
+            scale_color_manual(values = c("#009E73","#E69F00", "#CC79A7")) + 
+            ggtitle("Reference allele") +
+            facet_wrap(~Generation) + 
+            ylim(0,1) +
+            theme_classic() +
+            theme(legend.position = "none") 
+Ref_allele_scatter
 
-StackedBar <- ggplot(data = (F1F2F3_All.afs_qtl_treatmentMEANSE %>% 
-                              mutate(Treatment = forcats::fct_relevel(Treatment, "Low", "Moderate", "High"))), 
-                     aes(fill = forcats::fct_relevel(AlleleType, "af_ref", "af_alt"), 
-                         y = as.numeric(Frequency), 
-                         x = Generation)) +
-  geom_bar(position = "stack", stat = "identity", alpha = 0.5) +
-  scale_fill_manual(values = c("grey70", "grey20")) +
-  ggtitle("Stacked Bar MAF v Ref") +
-  facet_wrap(~Treatment) + 
-  theme_classic() +
-  theme(legend.position = "none") 
 
-ggpubr::ggarrange(scatter, StackedBar, nrow = 1)
+Alt_allele_scatter <- ggplot(data = (F1F2F3_All.afs_qtl_treatment %>% 
+                            # filter(locus %in% 'CM084266.1_65580309') %>% 
+                            filter(AlleleType %in% 'af_alt')), 
+            aes(y = as.numeric(Frequency), x = Treatment, group = locus, color = Treatment)) +
+            geom_line(aes(group = locus), color = "grey80") +
+            # geom_line(aes(group = locus,color = 'grey40')) +
+            geom_point(aes(color = Treatment, alpha = 0.5))+
+            scale_color_manual(values = c("#009E73","#E69F00", "#CC79A7")) + 
+            ggtitle("Alt allele MAF") +
+            facet_wrap(~Generation) + 
+            ylim(0,1) +
+            theme_classic() +
+            theme(legend.position = "none") 
+Alt_allele_scatter
+
+StackedBar <- ggplot(data = (F1F2F3_All.afs_qtl_treatmentMEANSE), 
+                      aes(fill = forcats::fct_relevel(AlleleType, "af_ref", "af_alt"), 
+                                             y = as.numeric(Frequency), 
+                                             x = Treatment)) +
+                      geom_bar(position = "stack", stat = "identity", alpha = 0.5) +
+                      scale_fill_manual(values = c("grey70", "grey20")) +
+                      scale_alpha_manual(values = c(0.1, 2)) +
+                      ggtitle("Stacked Bar MAF v Ref") +
+                      facet_wrap(~Generation) + 
+                      ylim(0,1) +
+                      theme_classic() +
+                      theme(legend.position = "none") 
+?scale_fill_manual
+ggpubr::ggarrange(Ref_allele_scatter,
+                  Alt_allele_scatter, 
+                  StackedBar, nrow = 3)
+
+?scale_alpha_manual
  
  
 ```
