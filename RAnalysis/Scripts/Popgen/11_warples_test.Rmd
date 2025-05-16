@@ -27,11 +27,59 @@ knitr::opts_knit$set(root.dir = "C:/Users/samjg/Documents/Github_repositories/EA
 ```{r, include=FALSE}
 library(tidyverse)
 library(ggplot2)
-library(tidyverse)
 library(vcfR)
 library(gwscaR) #remotes::install_github("spflanagan/gwscaR")
+library(SNPRelate) # BiocManager::install('SNPRelate')
+library(dartR) #  gl.report.hwe to test ary-weinberg equilibrium of ref, het, hom alleles
+#gl.install.vanilla.dartR() # recommended by package authors for up to date packages
 ```
 
+
+
+```{r}
+F1F2F3_All.vcf@gt
+F1F2F3_All.genind <- vcfR::vcfR2genind(F1F2F3_All.vcf, 
+                                    sep = "[|/]", 
+                                    pop = F1F2F3_All.metadata$gen_treatment, 
+                                    strata = F1F2F3_All.metadata)
+
+
+F1F2F3_All.genind_SNPs     <- tibble::rownames_to_column( # tibble wants to act on a df, move rownmaes to col
+                              (as.data.frame(as.matrix(F1F2F3_All.genind))),# conversion genind - mx - df
+                              "id") %>% # call it id
+                  dplyr::select(contains(
+                                      (gsub('*.[.]','',F1F2F3_All.qtl_treatment$locus)))) %>%  # filter id for those in kinship mx
+                  # lme4qtl family = binomial(link = "probit") only recognized 0,1 data 
+                  # the current file before the call before contains duplicate colnames as
+                  # '__.0' or '___.1' for loci, 0 being data as 2,1 and 1 being data as 0,1
+                  # so filter out all columns with the string '.1' to retain only loci described with 0,1 nomenclature
+                  dplyr::select(!matches("\\.0$"))
+
+gsub('*.[.]','',F1F2F3_All.qtl_treatment$locus)
+
+?adegenet::df2genind
+df2genind(F1F2F3_All.genind_SNPs,sep = "CM")
+
+F1F2F3_All.genlight <- gi2gl(F1F2F3_All.genind, parallel = FALSE, verbose = NULL)
+F1F2F3_All.genlight@strata
+gl.report.hwe(
+  F1F2F3_All.genlight, # 	Name of the genlight object containing the SNP data [required].
+  subset = "each", # Way to group individuals to perform H-W tests. Either a vector with population names, 'each', 'all' (see details) [default 'each'].
+  method_sig = "Exact", # Method for determining statistical significance: 'ChiSquare' or 'Exact' [default 'Exact'].
+  multi_comp = TRUE, # Whether to adjust p-values for multiple comparisons [default FALSE].
+  multi_comp_method = "holm", # Method to adjust p-values for multiple comparisons: 'holm', 'hochberg', 'hommel', 'bonferroni'
+  alpha_val = 0.05,
+  pvalue_type = "midp",
+  cc_val = 0.5,
+  sig_only = TRUE, # whether to return a table with only those that dev from HW eq
+  min_sample_size = 5, # inimum number of individuals per population in which perform H-W tests [default 5].
+  plot.out = TRUE, # whether or not to output ternary plots
+  # plot_colors = two_colors_contrast,
+  max_plots = 4,
+  save2tmp = FALSE,
+  verbose = NULL
+)
+```
 
 ### Convert vcf to MAF 
 
